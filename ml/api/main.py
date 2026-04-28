@@ -49,14 +49,27 @@ app = FastAPI(
     ),
 )
 
-# CORS — Next.js dev + prod origins
-_default_origins = "http://localhost:3000,http://127.0.0.1:3000"
-_allowed = os.environ.get("ALLOWED_ORIGINS", _default_origins).split(",")
+# CORS — allow dev localhost + any Vercel deployment + any ngrok tunnel.
+# Override by setting ALLOWED_ORIGINS="url1,url2" in the environment.
+# Use ALLOWED_ORIGINS="*" to allow every origin (useful behind ngrok).
+_env_origins = os.environ.get("ALLOWED_ORIGINS", "")
+
+if _env_origins.strip() == "*":
+    _allow_origins = ["*"]
+else:
+    _defaults = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+    _extra = [o.strip() for o in _env_origins.split(",") if o.strip()]
+    _allow_origins = list(dict.fromkeys(_defaults + _extra))   # deduplicated
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in _allowed if o.strip()],
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_origins=_allow_origins,
+    allow_origin_regex=r"https://(.*\.vercel\.app|.*\.ngrok.*)",  # catch all Vercel + ngrok URLs
+    allow_credentials=True,
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
