@@ -7,6 +7,8 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import StatCard from "@/components/StatCard";
 import GoLiveButton from "@/components/GoLiveButton";
+import DoctorPendingApprovals from "@/components/DoctorPendingApprovals";
+import DoctorConsultationNotification from "@/components/DoctorConsultationNotification";
 import {
   Users, Star, IndianRupee, CalendarDays, ChevronRight,
   Clock, AlertCircle, CheckCircle2, Stethoscope,
@@ -98,6 +100,24 @@ export default async function DoctorDashboard() {
               {profile.isLive ? "You are live and accepting consultations." : "Toggle Go Live to start accepting consultations."}
             </p>
           </div>
+        </div>
+      )}
+
+      {/* Active consultations — patients waiting / in-call / post-call */}
+      {isApproved && (
+        <div className="animate-fade-in-up stagger-1 opacity-0" style={{ animationFillMode: "forwards" }}>
+          <DoctorConsultationNotification />
+        </div>
+      )}
+
+      {/* Incoming approval requests — polls every 5s */}
+      {isApproved && (
+        <div className="animate-fade-in-up stagger-1 opacity-0" style={{ animationFillMode: "forwards" }}>
+          <h2 className="font-semibold text-slate-700 mb-3 flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse inline-block" />
+            Incoming Consultation Requests
+          </h2>
+          <DoctorPendingApprovals />
         </div>
       )}
 

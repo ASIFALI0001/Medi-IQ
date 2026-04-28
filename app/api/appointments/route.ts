@@ -3,7 +3,6 @@ import { getCurrentUser } from "@/lib/auth";
 import { connectDB } from "@/lib/mongodb";
 import Appointment from "@/lib/models/Appointment";
 import DoctorProfile from "@/lib/models/DoctorProfile";
-import User from "@/lib/models/User";
 
 export async function GET(req: NextRequest) {
   try {
@@ -12,16 +11,20 @@ export async function GET(req: NextRequest) {
 
     await connectDB();
     const { searchParams } = new URL(req.url);
-    const limit = parseInt(searchParams.get("limit") ?? "10");
+    const limit = parseInt(searchParams.get("limit") ?? "20");
 
     let filter = {};
     if (user.role === "patient") filter = { patientRef: user.userId };
     if (user.role === "doctor") filter = { doctorRef: user.userId };
 
-    const appointments = await Appointment.find(filter)
-      .sort({ date: -1 })
-      .limit(limit);
+    // Optional status filter (comma-separated)
+    const statusParam = searchParams.get("status");
+    if (statusParam) {
+      const statuses = statusParam.split(",").map(s => s.trim());
+      filter = { ...filter, status: { $in: statuses } };
+    }
 
+    const appointments = await Appointment.find(filter).sort({ createdAt: -1 }).limit(limit);
     return NextResponse.json({ appointments });
   } catch (err) {
     console.error(err);
@@ -37,26 +40,41 @@ export async function POST(req: NextRequest) {
     }
 
     await connectDB();
-    const { doctorId, date, timeSlot } = await req.json();
+    const { doctorUserId } = await req.json();
 
-    const doctorProfile = await DoctorProfile.findOne({ userRef: doctorId }).populate("userRef");
+    const doctorProfile = await DoctorProfile.findOne({ userRef: doctorUserId }).populate("userRef", "name");
     if (!doctorProfile) return NextResponse.json({ error: "Doctor not found" }, { status: 404 });
     if (doctorProfile.verificationStatus !== "approved") {
       return NextResponse.json({ error: "Doctor not available" }, { status: 400 });
     }
+    if (!doctorProfile.isLive) {
+      return NextResponse.json({ error: "Doctor is not live right now" }, { status: 400 });
+    }
+
+    // Check if patient already has a pending/confirmed appointment
+    const existing = await Appointment.findOne({
+      patientRef: user.userId,
+      status: { $in: ["pending_approval", "confirmed", "active", "in_call", "post_call"] },
+    });
+    if (existing) {
+      return NextResponse.json({ error: "You already have an active appointment" }, { status: 400 });
+    }
+
+    const bookedAt = new Date();
+    const consultationStartsAt = new Date(bookedAt.getTime() + 10 * 60 * 1000); // +10 min
 
     const doctorUser = doctorProfile.userRef as unknown as { name: string };
 
     const appointment = await Appointment.create({
       patientRef: user.userId,
-      doctorRef: doctorId,
+      doctorRef: doctorUserId,
       patientName: user.name,
       doctorName: doctorUser.name,
       specialization: doctorProfile.specialization,
-      date: new Date(date),
-      timeSlot,
       consultationFee: doctorProfile.consultationFee,
-      status: "scheduled",
+      status: "pending_approval",
+      bookedAt,
+      consultationStartsAt,
     });
 
     return NextResponse.json({ appointment }, { status: 201 });
