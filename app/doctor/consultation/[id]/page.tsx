@@ -27,11 +27,12 @@ export default function DoctorConsultationPage({ params }: Props) {
   const [peerConnected, setPeer]      = useState(false);
   const endingRef                     = useRef(false);   // prevent double-redirect
 
-  // useWebRTC uses DB polling now — no socketRef needed for signaling
+  // useWebRTC uses DB polling — streamReady gates offer creation
   const { connState, remoteStream, hangup } = useWebRTC({
     appointmentId: id,
     role:          "doctor",
     localStreamRef,
+    streamReady,
   });
 
   const { lines, getFullText } = useTranscription({
@@ -64,15 +65,12 @@ export default function DoctorConsultationPage({ params }: Props) {
     };
   }, []);
 
-  // Mark in_call + notify socket once stream ready
+  // Mark appointment as in_call + notify patient via socket (fast path)
   useEffect(() => {
     if (!streamReady) return;
     fetch(`/api/appointments/${id}/start-call`, { method: "POST" }).catch(() => {});
-    const socket = socketRef.current;
-    if (socket) {
-      socket.emit("call:join",         { appointmentId: id, role: "doctor" });
-      socket.emit("call:doctor-ready", { appointmentId: id });
-    }
+    // Socket fast-path: wake up patient waiting room immediately (fallback: patient polls status)
+    socketRef.current?.emit("call:doctor-ready", { appointmentId: id });
   }, [streamReady, id, socketRef]);
 
   // Attach remote stream

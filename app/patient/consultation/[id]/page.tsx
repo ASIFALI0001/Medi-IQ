@@ -21,11 +21,12 @@ export default function PatientConsultationPage({ params }: { params: Promise<{ 
   const [callEnded, setCallEnded]    = useState(false);
   const [peerConnected, setPeerConn] = useState(false);
 
-  // useWebRTC now uses DB polling — no socketRef needed for signaling
+  // useWebRTC uses DB polling — streamReady gates offer processing
   const { connState, remoteStream, hangup } = useWebRTC({
     appointmentId: id,
     role:          "patient",
     localStreamRef,
+    streamReady,
   });
 
   const { lines } = useTranscription({
