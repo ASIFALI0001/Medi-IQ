@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Radio, User, X } from "lucide-react";
+import { Radio, User, X, Clock } from "lucide-react";
 import toast from "react-hot-toast";
 import { useSocket } from "@/hooks/useSocket";
 import Button from "@/components/ui/Button";
@@ -15,18 +15,17 @@ interface ActiveAppt {
 }
 
 export default function DoctorConsultationNotification() {
-  const router    = useRouter();
-  const socketRef = useSocket();
-  const [appts, setAppts]         = useState<ActiveAppt[]>([]);
+  const router      = useRouter();
+  const socketRef   = useSocket();
+  const [appts, setAppts]           = useState<ActiveAppt[]>([]);
   const [cancelling, setCancelling] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const res  = await fetch("/api/appointments?role=doctor&status=active,in_call,post_call");
+      // Include confirmed so we catch patients who enter the waiting room before the 10-min timer
+      const res  = await fetch("/api/appointments?role=doctor&status=confirmed,active,in_call,post_call");
       const data = await res.json();
-      setAppts((data.appointments ?? []).filter((a: ActiveAppt) =>
-        ["active", "in_call", "post_call"].includes(a.status)
-      ));
+      setAppts(data.appointments ?? []);
     } catch { /* ignore */ }
   }, []);
 
@@ -36,19 +35,19 @@ export default function DoctorConsultationNotification() {
     return () => clearInterval(interval);
   }, [refresh]);
 
-  // Subscribe to waiting-room socket events
+  // Subscribe to waiting-room socket events for all tracked appointments
   useEffect(() => {
     const socket = socketRef.current;
     if (!socket || appts.length === 0) return;
     appts.forEach(a => socket.emit("doctor:watch", { appointmentId: a._id }));
 
-    const handler = ({ appointmentId }: { appointmentId: string }) => {
+    const onWaiting = ({ appointmentId }: { appointmentId: string }) => {
       setAppts(prev =>
         prev.map(a => a._id === appointmentId ? { ...a, waitingRoomAt: new Date().toISOString() } : a)
       );
     };
-    socket.on("patient:waiting", handler);
-    return () => { socket.off("patient:waiting", handler); };
+    socket.on("patient:waiting", onWaiting);
+    return () => { socket.off("patient:waiting", onWaiting); };
   }, [appts, socketRef]);
 
   const handleCancel = useCallback(async (apptId: string, patientName: string) => {
@@ -56,8 +55,7 @@ export default function DoctorConsultationNotification() {
     setCancelling(apptId);
     try {
       const res = await fetch(`/api/appointments/${apptId}/cancel`, { method: "POST" });
-      if (!res.ok) { toast.error("Could not cancel appointment"); return; }
-      // Notify patient in waiting room via socket
+      if (!res.ok) { toast.error("Could not cancel"); return; }
       socketRef.current?.emit("appointment:cancel", { appointmentId: apptId });
       toast.success("Appointment cancelled");
       setAppts(prev => prev.filter(a => a._id !== apptId));
@@ -68,18 +66,26 @@ export default function DoctorConsultationNotification() {
     }
   }, [socketRef]);
 
-  const patientWaiting = appts.filter(a => a.status === "active" && a.waitingRoomAt);
-  const inCall         = appts.filter(a => a.status === "in_call");
-  const postCall       = appts.filter(a => a.status === "post_call");
+  // Categorise
+  const patientWaiting = appts.filter(a =>
+    ["confirmed", "active"].includes(a.status) && !!a.waitingRoomAt
+  );
+  const waitingNoPatient = appts.filter(a =>
+    ["confirmed", "active"].includes(a.status) && !a.waitingRoomAt
+  );
+  const inCall   = appts.filter(a => a.status === "in_call");
+  const postCall = appts.filter(a => a.status === "post_call");
 
   if (appts.length === 0) return null;
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 mb-2">
 
-      {/* Patient waiting */}
+      {/* ── Patient in waiting room — Connect NOW + Cancel ── */}
       {patientWaiting.map(a => (
-        <div key={a._id} className="bg-emerald-50 border border-emerald-200 rounded-2xl p-5 flex items-center justify-between gap-3 animate-fade-in">
+        <div key={a._id}
+          className="bg-emerald-50 border-2 border-emerald-400 rounded-2xl p-5 flex items-center justify-between gap-3 animate-fade-in"
+        >
           <div className="flex items-center gap-3 min-w-0">
             <div className="w-10 h-10 rounded-xl bg-emerald-100 flex items-center justify-center shrink-0">
               <User className="w-5 h-5 text-emerald-600" />
@@ -87,9 +93,9 @@ export default function DoctorConsultationNotification() {
             <div className="min-w-0">
               <p className="font-bold text-emerald-800 text-sm flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse inline-block shrink-0" />
-                {a.patientName} is waiting
+                {a.patientName} is in the waiting room
               </p>
-              <p className="text-emerald-600 text-xs">Ready for consultation</p>
+              <p className="text-emerald-600 text-xs">Ready now — join anytime</p>
             </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -99,7 +105,8 @@ export default function DoctorConsultationNotification() {
             <button
               onClick={() => handleCancel(a._id, a.patientName)}
               disabled={cancelling === a._id}
-              className="flex items-center gap-1 text-xs text-red-600 hover:text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg px-3 py-1.5 font-semibold transition-colors disabled:opacity-50"
+              title="Cancel appointment"
+              className="flex items-center gap-1 text-xs text-white bg-red-600 hover:bg-red-700 rounded-lg px-3 py-1.5 font-semibold transition-colors disabled:opacity-50 shrink-0"
             >
               <X className="w-3.5 h-3.5" />
               {cancelling === a._id ? "..." : "Cancel"}
@@ -108,9 +115,37 @@ export default function DoctorConsultationNotification() {
         </div>
       ))}
 
-      {/* Active call */}
+      {/* ── Confirmed / active but patient not in waiting room yet — Cancel always visible ── */}
+      {waitingNoPatient.map(a => (
+        <div key={a._id}
+          className="bg-white border border-blue-100 rounded-2xl p-4 flex items-center justify-between gap-3"
+        >
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-blue-50 flex items-center justify-center shrink-0">
+              <Clock className="w-4 h-4 text-blue-500" />
+            </div>
+            <div className="min-w-0">
+              <p className="font-semibold text-slate-700 text-sm truncate">{a.patientName}</p>
+              <p className="text-slate-400 text-xs">Waiting for patient to join room</p>
+            </div>
+          </div>
+          <button
+            onClick={() => handleCancel(a._id, a.patientName)}
+            disabled={cancelling === a._id}
+            title="Cancel appointment"
+            className="flex items-center gap-1 text-xs text-white bg-red-600 hover:bg-red-700 rounded-lg px-3 py-1.5 font-semibold transition-colors disabled:opacity-50 shrink-0"
+          >
+            <X className="w-3.5 h-3.5" />
+            {cancelling === a._id ? "..." : "Cancel"}
+          </button>
+        </div>
+      ))}
+
+      {/* ── Active call ── */}
       {inCall.map(a => (
-        <div key={a._id} className="bg-blue-50 border border-blue-200 rounded-2xl p-5 flex items-center justify-between">
+        <div key={a._id}
+          className="bg-blue-50 border border-blue-200 rounded-2xl p-5 flex items-center justify-between"
+        >
           <div className="flex items-center gap-3">
             <Radio className="w-5 h-5 text-blue-600 animate-pulse shrink-0" />
             <div>
@@ -124,9 +159,11 @@ export default function DoctorConsultationNotification() {
         </div>
       ))}
 
-      {/* Post call — write prescription */}
+      {/* ── Post call — write prescription ── */}
       {postCall.map(a => (
-        <div key={a._id} className="bg-violet-50 border border-violet-200 rounded-2xl p-5 flex items-center justify-between">
+        <div key={a._id}
+          className="bg-violet-50 border border-violet-200 rounded-2xl p-5 flex items-center justify-between"
+        >
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-violet-100 flex items-center justify-center shrink-0">
               <User className="w-5 h-5 text-violet-600" />
