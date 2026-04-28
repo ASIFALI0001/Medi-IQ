@@ -1,47 +1,76 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Socket } from "socket.io-client";
 
-// STUN = discover public IP (works same-network)
-// TURN = relay traffic (required for mobile ↔ desktop across different networks)
+// STUN discovers public IP. TURN relays traffic when direct P2P fails
+// (required for mobile-data ↔ home-WiFi, different NAT types, etc.)
 const ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
-  // Free public TURN from Open Relay Project — handles NAT across mobile ↔ desktop
-  { urls: "turn:openrelay.metered.ca:80",              username: "openrelayproject", credential: "openrelayproject" },
-  { urls: "turn:openrelay.metered.ca:443",             username: "openrelayproject", credential: "openrelayproject" },
+  { urls: "turn:openrelay.metered.ca:80",                username: "openrelayproject", credential: "openrelayproject" },
+  { urls: "turn:openrelay.metered.ca:443",               username: "openrelayproject", credential: "openrelayproject" },
   { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
 ];
 
 type ConnectionState = "idle" | "connecting" | "connected" | "disconnected" | "failed";
 
+interface Signaling {
+  offer?:       { type: string; sdp: string } | null;
+  answer?:      { type: string; sdp: string } | null;
+  doctorIce:    object[];
+  patientIce:   object[];
+}
+
 interface UseWebRTCOptions {
   appointmentId:  string;
   role:           "doctor" | "patient";
-  socketRef:      React.RefObject<Socket | null>;
   localStreamRef: React.RefObject<MediaStream | null>;
 }
+
+// ── API helpers ───────────────────────────────────────────────────────────────
+
+async function postSignal(id: string, type: string, payload: unknown) {
+  await fetch(`/api/appointments/${id}/webrtc-signal`, {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify({ type, payload }),
+  });
+}
+
+async function getSignaling(id: string): Promise<Signaling | null> {
+  const res  = await fetch(`/api/appointments/${id}/webrtc-signal`);
+  const data = await res.json() as { signaling?: Signaling | null };
+  return data.signaling ?? null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 export function useWebRTC({
   appointmentId,
   role,
-  socketRef,
   localStreamRef,
 }: UseWebRTCOptions) {
   const pcRef           = useRef<RTCPeerConnection | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);   // lazy — never new'd on server
-  const initiatedRef    = useRef(false);                      // prevent double-offer
-  const [connState, setConnState]     = useState<ConnectionState>("idle");
+  const initiatedRef    = useRef(false);
+  const answerApplied   = useRef(false);
+  const appliedDocIce   = useRef(0);   // count of already-applied doctor ICE candidates
+  const appliedPatIce   = useRef(0);   // count of already-applied patient ICE candidates
+  const pollTimer       = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const [connState, setConnState]       = useState<ConnectionState>("idle");
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
 
-  const createPC = useCallback(() => {
+  // ── Peer connection factory ─────────────────────────────────────────────────
+
+  const createPC = useCallback((): RTCPeerConnection => {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
     pc.onicecandidate = ({ candidate }) => {
-      if (candidate) {
-        socketRef.current?.emit("call:ice", { appointmentId, candidate: candidate.toJSON() });
-      }
+      if (!candidate) return;
+      // Store our ICE candidates in the DB so the other party can poll for them
+      const iceType = role === "doctor" ? "ice-doctor" : "ice-patient";
+      postSignal(appointmentId, iceType, candidate.toJSON()).catch(() => {});
     };
 
     pc.ontrack = ({ track }) => {
@@ -58,21 +87,19 @@ export function useWebRTC({
     };
 
     return pc;
-  }, [appointmentId, socketRef]);
+  }, [appointmentId, role]);
 
   const attachLocalTracks = useCallback((pc: RTCPeerConnection) => {
-    localStreamRef.current?.getTracks().forEach(track =>
-      pc.addTrack(track, localStreamRef.current!)
-    );
+    const stream = localStreamRef.current;
+    if (!stream) return;
+    stream.getTracks().forEach(track => pc.addTrack(track, stream));
   }, [localStreamRef]);
 
-  // Only doctor creates an offer — guarded so it runs at most once per session
+  // ── Doctor: create offer and store in DB ────────────────────────────────────
+
   const initiateCall = useCallback(async () => {
     if (initiatedRef.current) return;
     initiatedRef.current = true;
-
-    const socket = socketRef.current;
-    if (!socket) return;
     setConnState("connecting");
 
     const pc = createPC();
@@ -81,85 +108,92 @@ export function useWebRTC({
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    socket.emit("call:offer", { appointmentId, offer });
-  }, [appointmentId, socketRef, createPC, attachLocalTracks]);
+
+    // Offer goes to MongoDB — patient will pick it up via polling
+    await postSignal(appointmentId, "offer", { type: offer.type, sdp: offer.sdp });
+  }, [appointmentId, createPC, attachLocalTracks]);
+
+  // ── Polling loop — works on Vercel (no Socket.io required) ─────────────────
+  // Doctor polls for: answer, patientIce
+  // Patient polls for: offer, doctorIce
+
+  const startPolling = useCallback(() => {
+    if (pollTimer.current) return;
+
+    pollTimer.current = setInterval(async () => {
+      try {
+        const sig = await getSignaling(appointmentId);
+        if (!sig) return;
+
+        const pc = pcRef.current;
+
+        if (role === "doctor") {
+          // Apply answer once
+          if (sig.answer && !answerApplied.current && pc) {
+            answerApplied.current = true;
+            await pc.setRemoteDescription(new RTCSessionDescription(sig.answer as RTCSessionDescriptionInit));
+          }
+          // Apply any new patient ICE candidates
+          const newPatIce = (sig.patientIce ?? []).slice(appliedPatIce.current);
+          for (const c of newPatIce) {
+            try { await pc?.addIceCandidate(new RTCIceCandidate(c as RTCIceCandidateInit)); } catch {}
+          }
+          appliedPatIce.current += newPatIce.length;
+        }
+
+        if (role === "patient") {
+          // Process offer once (create answer)
+          if (sig.offer && !initiatedRef.current) {
+            initiatedRef.current = true;
+            setConnState("connecting");
+
+            const newPc = createPC();
+            pcRef.current = newPc;
+            attachLocalTracks(newPc);
+
+            await newPc.setRemoteDescription(new RTCSessionDescription(sig.offer as RTCSessionDescriptionInit));
+            const answer = await newPc.createAnswer();
+            await newPc.setLocalDescription(answer);
+
+            await postSignal(appointmentId, "answer", { type: answer.type, sdp: answer.sdp });
+          }
+          // Apply any new doctor ICE candidates
+          const newDocIce = (sig.doctorIce ?? []).slice(appliedDocIce.current);
+          for (const c of newDocIce) {
+            try { await pcRef.current?.addIceCandidate(new RTCIceCandidate(c as RTCIceCandidateInit)); } catch {}
+          }
+          appliedDocIce.current += newDocIce.length;
+        }
+      } catch { /* ignore transient network errors */ }
+    }, 800);
+  }, [appointmentId, role, createPC, attachLocalTracks]);
+
+  // ── Lifecycle ───────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    const socket = socketRef.current;
-    if (!socket) return;
+    // Clear stale signaling from a previous call session
+    postSignal(appointmentId, "clear", null).catch(() => {});
 
-    // ── "call:ready" handshake — fixes the race condition ────────────────────
-    // Patient registers ALL listeners first, THEN emits call:ready.
-    // Doctor only creates the offer after receiving call:ready, guaranteeing
-    // the patient's onOffer handler is already mounted.
-    //
-    // Fallback: if patient was already in the room when doctor joined, the
-    // server's call:peer-joined fires immediately; patient will echo call:ready
-    // after their own listeners mount (usually within 1-2 render cycles).
-
-    const onReady = () => {
-      if (role === "doctor") initiateCall();
-    };
-
-    const onPeerJoined = ({ role: peerRole }: { role: string }) => {
-      // Patient was already in the room — they'll emit call:ready very shortly.
-      // We DON'T initiate here; wait for call:ready to avoid the race condition.
-      // (If call:ready never arrives — e.g. old client — fall back after 4 s.)
-      if (role === "doctor" && peerRole === "patient") {
-        setTimeout(() => initiateCall(), 4000);
-      }
-    };
-
-    const onOffer = async ({ offer }: { offer: RTCSessionDescriptionInit }) => {
-      if (role !== "patient") return;
-      setConnState("connecting");
-      const pc = createPC();
-      pcRef.current = pc;
-      attachLocalTracks(pc);
-      await pc.setRemoteDescription(new RTCSessionDescription(offer));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      socket.emit("call:answer", { appointmentId, answer });
-    };
-
-    const onAnswer = async ({ answer }: { answer: RTCSessionDescriptionInit }) => {
-      await pcRef.current?.setRemoteDescription(new RTCSessionDescription(answer));
-    };
-
-    const onIce = async ({ candidate }: { candidate: RTCIceCandidateInit }) => {
-      try { await pcRef.current?.addIceCandidate(new RTCIceCandidate(candidate)); }
-      catch { /* ignore late / duplicate candidates */ }
-    };
-
-    const onPeerDisconnected = () => setConnState("disconnected");
-
-    socket.on("call:peer-joined",       onPeerJoined);
-    socket.on("call:ready",             onReady);
-    socket.on("call:offer",             onOffer);
-    socket.on("call:answer",            onAnswer);
-    socket.on("call:ice",               onIce);
-    socket.on("call:peer-disconnected", onPeerDisconnected);
-
-    // Patient signals readiness AFTER all listeners are registered
-    if (role === "patient") {
-      socket.emit("call:ready", { appointmentId });
+    if (role === "doctor") {
+      // Doctor initiates immediately — offer stored in DB, patient will poll it
+      initiateCall();
     }
 
+    startPolling();
+
     return () => {
-      socket.off("call:peer-joined",       onPeerJoined);
-      socket.off("call:ready",             onReady);
-      socket.off("call:offer",             onOffer);
-      socket.off("call:answer",            onAnswer);
-      socket.off("call:ice",               onIce);
-      socket.off("call:peer-disconnected", onPeerDisconnected);
+      if (pollTimer.current) { clearInterval(pollTimer.current); pollTimer.current = null; }
     };
-  }, [appointmentId, role, socketRef, createPC, attachLocalTracks, initiateCall]);
+  }, [appointmentId, role, initiateCall, startPolling]);
 
   const hangup = useCallback(() => {
+    if (pollTimer.current) { clearInterval(pollTimer.current); pollTimer.current = null; }
     pcRef.current?.close();
     pcRef.current = null;
+    // Clean up signaling data from DB
+    postSignal(appointmentId, "clear", null).catch(() => {});
     setConnState("disconnected");
-  }, []);
+  }, [appointmentId]);
 
   return { connState, remoteStream, hangup };
 }

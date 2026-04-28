@@ -27,10 +27,10 @@ export default function DoctorConsultationPage({ params }: Props) {
   const [peerConnected, setPeer]      = useState(false);
   const endingRef                     = useRef(false);   // prevent double-redirect
 
+  // useWebRTC uses DB polling now — no socketRef needed for signaling
   const { connState, remoteStream, hangup } = useWebRTC({
     appointmentId: id,
     role:          "doctor",
-    socketRef,
     localStreamRef,
   });
 
@@ -83,7 +83,24 @@ export default function DoctorConsultationPage({ params }: Props) {
     }
   }, [remoteStream]);
 
-  // If patient ends the call, redirect doctor to post-call page too
+  // Poll appointment status — detects when patient ends call (works on Vercel)
+  useEffect(() => {
+    if (endingRef.current) return;
+    const poll = async () => {
+      try {
+        const res  = await fetch(`/api/appointments/${id}`);
+        const data = await res.json();
+        if (data.appointment?.status === "post_call") {
+          goToPostCall(getFullText());
+        }
+      } catch {}
+    };
+    const interval = setInterval(poll, 4000);
+    return () => clearInterval(interval);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  // Socket fast-path: patient ends call → immediate notification
   useEffect(() => {
     const socket = socketRef.current;
     if (!socket) return;

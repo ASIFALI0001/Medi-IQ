@@ -86,23 +86,17 @@ export function useTranscription({
       }
     };
 
-    // Errors that mean we should give up (mic already in use by WebRTC, etc.)
-    const FATAL_ERRORS = new Set(["audio-capture", "not-allowed", "service-not-allowed", "aborted"]);
-
-    recognition.onerror = (e: ISpeechRecognitionErrorEvent) => {
-      if (e.error === "no-speech") return;   // harmless — silence in the room
-      console.warn("Speech recognition:", e.error);
-      if (FATAL_ERRORS.has(e.error)) {
-        // Mic is already claimed by WebRTC on mobile Chrome — stop trying
-        recognitionRef.current = null;
-        setListening(false);
-      }
+    recognition.onerror = (_e: ISpeechRecognitionErrorEvent) => {
+      // Any error (mic in use by WebRTC, network, permission, etc.) → give up silently.
+      // Transcription is best-effort; video call must not be disrupted.
+      recognitionRef.current = null;
+      setListening(false);
     };
 
     recognition.onend = () => {
-      // Only auto-restart for non-fatal stops (natural pause/silence)
+      // Only auto-restart if we're still the active instance and no error occurred
       if (recognitionRef.current === recognition && enabled) {
-        try { recognition.start(); } catch { /* already stopped */ }
+        try { recognition.start(); } catch { /* mic unavailable — stop */ }
       }
     };
 
@@ -110,7 +104,6 @@ export function useTranscription({
       recognition.start();
       setListening(true);
     } catch {
-      // start() throws if mic isn't available — fail silently
       recognitionRef.current = null;
     }
   }, [appointmentId, role, socketRef, enabled, addLine]);

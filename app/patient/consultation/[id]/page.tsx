@@ -21,10 +21,10 @@ export default function PatientConsultationPage({ params }: { params: Promise<{ 
   const [callEnded, setCallEnded]    = useState(false);
   const [peerConnected, setPeerConn] = useState(false);
 
+  // useWebRTC now uses DB polling — no socketRef needed for signaling
   const { connState, remoteStream, hangup } = useWebRTC({
     appointmentId: id,
     role:          "patient",
-    socketRef,
     localStreamRef,
   });
 
@@ -38,25 +38,19 @@ export default function PatientConsultationPage({ params }: { params: Promise<{ 
   // Get camera + mic
   useEffect(() => {
     let active = true;
-    navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then(stream => {
-      if (!active) { stream.getTracks().forEach(t => t.stop()); return; }
-      localStreamRef.current = stream;
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-      }
-      setStreamReady(true);
-    }).catch(() => {});
+    navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+      .then(stream => {
+        if (!active) { stream.getTracks().forEach(t => t.stop()); return; }
+        localStreamRef.current = stream;
+        if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+        setStreamReady(true);
+      })
+      .catch(() => {});
     return () => {
       active = false;
       localStreamRef.current?.getTracks().forEach(t => t.stop());
     };
   }, []);
-
-  // Join socket call room once stream is ready
-  useEffect(() => {
-    if (!streamReady) return;
-    socketRef.current?.emit("call:join", { appointmentId: id, role: "patient" });
-  }, [streamReady, id, socketRef]);
 
   // Attach remote stream to video element
   useEffect(() => {
@@ -66,25 +60,45 @@ export default function PatientConsultationPage({ params }: { params: Promise<{ 
     }
   }, [remoteStream]);
 
-  // When doctor (or anyone) ends the call — save transcript + show prescription view
+  // Poll appointment status to detect when call ends (works on Vercel without Socket.io)
+  useEffect(() => {
+    if (callEnded) return;
+    const poll = async () => {
+      try {
+        const res  = await fetch(`/api/appointments/${id}`);
+        const data = await res.json();
+        const status = data.appointment?.status;
+        if (status === "post_call" || status === "completed") {
+          hangup();
+          setCallEnded(true);
+        }
+      } catch {}
+    };
+    const interval = setInterval(poll, 3000);
+    return () => clearInterval(interval);
+  }, [id, callEnded, hangup]);
+
+  // Socket fast-path: doctor ends call → immediate notification
   useEffect(() => {
     const socket = socketRef.current;
     if (!socket) return;
-    const handler = () => {
-      hangup();
-      // Save transcript from patient's side too (in case doctor's side missed it)
-      const fullText = lines.map(l => `${l.role === "doctor" ? "Doctor" : "Patient"}: ${l.text}`).join("\n");
-      fetch(`/api/appointments/${id}/end-call`, {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ transcript: fullText }),
-      }).catch(() => {});
-      setCallEnded(true);
-    };
+    const handler = () => { hangup(); setCallEnded(true); };
     socket.on("call:ended", handler);
     return () => { socket.off("call:ended", handler); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [socketRef, id, hangup]);
+  }, [socketRef, hangup]);
+
+  const endCall = useCallback(async () => {
+    const fullText = lines.map(l =>
+      `${l.role === "doctor" ? "Doctor" : "Patient"}: ${l.text}`
+    ).join("\n");
+    socketRef.current?.emit("call:end", { appointmentId: id });
+    await fetch(`/api/appointments/${id}/end-call`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ transcript: fullText }),
+    }).catch(() => {});
+    hangup();
+    setCallEnded(true);
+  }, [id, lines, socketRef, hangup]);
 
   const toggleMic = useCallback(() => {
     localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = !t.enabled; });
@@ -96,19 +110,6 @@ export default function PatientConsultationPage({ params }: { params: Promise<{ 
     setCamOn(c => !c);
   }, []);
 
-  const handleEndCall = useCallback(async () => {
-    const fullText = lines.map(l => `${l.role === "doctor" ? "Doctor" : "Patient"}: ${l.text}`).join("\n");
-    socketRef.current?.emit("call:end", { appointmentId: id });
-    await fetch(`/api/appointments/${id}/end-call`, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({ transcript: fullText }),
-    }).catch(() => {});
-    hangup();
-    setCallEnded(true);
-  }, [id, lines, socketRef, hangup]);
-
-  // After call ends, show prescription view (polling)
   if (callEnded) {
     return (
       <div className="min-h-screen bg-slate-50">
@@ -122,45 +123,31 @@ export default function PatientConsultationPage({ params }: { params: Promise<{ 
 
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col text-white">
-      {/* Video area */}
       <div className="flex-1 grid grid-cols-2 gap-3 p-4">
-        {/* Doctor's video */}
+        {/* Doctor video */}
         <div className="relative rounded-2xl bg-slate-800 overflow-hidden">
-          <video
-            ref={remoteVideoRef}
-            autoPlay playsInline
-            className="w-full h-full object-cover"
-          />
+          <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
           {!peerConnected && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
               <Loader2 className="w-8 h-8 text-blue-400 animate-spin" />
               <p className="text-sm text-slate-300">
-                {connState === "connecting" ? "Connecting to doctor..." : "Waiting for doctor..."}
+                {connState === "connecting" ? "Connecting..." : "Waiting for doctor..."}
               </p>
             </div>
           )}
-          <div className="absolute bottom-3 left-3 bg-black/50 rounded-lg px-3 py-1 text-xs font-semibold">
-            Doctor
-          </div>
+          <div className="absolute bottom-3 left-3 bg-black/50 rounded-lg px-3 py-1 text-xs font-semibold">Doctor</div>
         </div>
 
         {/* Self view */}
         <div className="relative rounded-2xl bg-slate-800 overflow-hidden">
-          <video
-            ref={localVideoRef}
-            autoPlay playsInline muted
-            style={{ transform: "scaleX(-1)" }}
-            className="w-full h-full object-cover"
-          />
-          <div className="absolute bottom-3 left-3 bg-black/50 rounded-lg px-3 py-1 text-xs font-semibold">
-            You
-          </div>
+          <video ref={localVideoRef} autoPlay playsInline muted
+            style={{ transform: "scaleX(-1)" }} className="w-full h-full object-cover" />
+          <div className="absolute bottom-3 left-3 bg-black/50 rounded-lg px-3 py-1 text-xs font-semibold">You</div>
         </div>
       </div>
 
-      {/* Transcript */}
       {lines.length > 0 && (
-        <div className="mx-4 mb-3 max-h-32 overflow-y-auto rounded-xl bg-slate-900 border border-slate-700 px-4 py-3 space-y-1">
+        <div className="mx-4 mb-3 max-h-28 overflow-y-auto rounded-xl bg-slate-900 border border-slate-700 px-4 py-3 space-y-1">
           {lines.map((line, i) => (
             <p key={i} className="text-xs leading-relaxed">
               <span className={`font-semibold ${line.role === "doctor" ? "text-blue-400" : "text-emerald-400"}`}>
@@ -172,19 +159,15 @@ export default function PatientConsultationPage({ params }: { params: Promise<{ 
         </div>
       )}
 
-      {/* Controls */}
       <div className="flex items-center justify-center gap-4 px-4 pb-6">
-        <ControlButton onClick={toggleMic} active={micOn} label={micOn ? "Mute" : "Unmute"}>
+        <Ctrl onClick={toggleMic} active={micOn} label={micOn ? "Mute" : "Unmute"}>
           {micOn ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
-        </ControlButton>
-        <ControlButton onClick={toggleCam} active={camOn} label={camOn ? "Stop Video" : "Start Video"}>
+        </Ctrl>
+        <Ctrl onClick={toggleCam} active={camOn} label={camOn ? "Stop" : "Start"}>
           {camOn ? <Video className="w-5 h-5" /> : <VideoOff className="w-5 h-5" />}
-        </ControlButton>
-        <button
-          onClick={handleEndCall}
-          className="flex flex-col items-center gap-1.5"
-        >
-          <div className="w-14 h-14 rounded-full bg-red-600 hover:bg-red-700 flex items-center justify-center transition-colors shadow-lg active:scale-95">
+        </Ctrl>
+        <button onClick={endCall} className="flex flex-col items-center gap-1.5">
+          <div className="w-14 h-14 rounded-full bg-red-600 hover:bg-red-700 flex items-center justify-center shadow-lg active:scale-95">
             <PhoneOff className="w-6 h-6 text-white" />
           </div>
           <span className="text-xs text-slate-400">End</span>
@@ -194,14 +177,10 @@ export default function PatientConsultationPage({ params }: { params: Promise<{ 
   );
 }
 
-function ControlButton({
-  children, onClick, active, label,
-}: { children: React.ReactNode; onClick: () => void; active: boolean; label: string }) {
+function Ctrl({ children, onClick, active, label }: { children: React.ReactNode; onClick: () => void; active: boolean; label: string }) {
   return (
     <button onClick={onClick} className="flex flex-col items-center gap-1.5">
-      <div className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors shadow ${
-        active ? "bg-slate-700 hover:bg-slate-600" : "bg-red-900/60 hover:bg-red-800/60"
-      }`}>
+      <div className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors shadow ${active ? "bg-slate-700 hover:bg-slate-600" : "bg-red-900/60"}`}>
         {children}
       </div>
       <span className="text-xs text-slate-400">{label}</span>

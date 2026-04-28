@@ -74,6 +74,14 @@ export interface IAppointment extends Document {
   prescription?:      IPrescription;
   prescriptionSentAt?: Date;
 
+  // WebRTC signaling — DB-backed so it works on Vercel (no Socket.io needed)
+  callSignaling?: {
+    offer?:       { type: string; sdp: string };
+    answer?:      { type: string; sdp: string };
+    doctorIce:    object[];   // ICE candidates from doctor
+    patientIce:   object[];   // ICE candidates from patient
+  };
+
   // Post-call
   caseRef?:        mongoose.Types.ObjectId;
   patientRating?:  number;
@@ -161,6 +169,13 @@ const AppointmentSchema = new Schema<IAppointment>(
     aiPrescription: { type: PrescriptionSchema },
     prescription:   { type: PrescriptionSchema },
     prescriptionSentAt: { type: Date },
+
+    callSignaling: {
+      offer:        { type: Schema.Types.Mixed },
+      answer:       { type: Schema.Types.Mixed },
+      doctorIce:    { type: [Schema.Types.Mixed], default: [] },
+      patientIce:   { type: [Schema.Types.Mixed], default: [] },
+    },
 
     caseRef:       { type: Schema.Types.ObjectId, ref: "Case" },
     patientRating: { type: Number, min: 1, max: 5 },
