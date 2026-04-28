@@ -86,18 +86,33 @@ export function useTranscription({
       }
     };
 
-    recognition.onend = () => {
-      if (recognitionRef.current === recognition && enabled) {
-        recognition.start();
+    // Errors that mean we should give up (mic already in use by WebRTC, etc.)
+    const FATAL_ERRORS = new Set(["audio-capture", "not-allowed", "service-not-allowed", "aborted"]);
+
+    recognition.onerror = (e: ISpeechRecognitionErrorEvent) => {
+      if (e.error === "no-speech") return;   // harmless — silence in the room
+      console.warn("Speech recognition:", e.error);
+      if (FATAL_ERRORS.has(e.error)) {
+        // Mic is already claimed by WebRTC on mobile Chrome — stop trying
+        recognitionRef.current = null;
+        setListening(false);
       }
     };
 
-    recognition.onerror = (e: ISpeechRecognitionErrorEvent) => {
-      if (e.error !== "no-speech") console.warn("Speech recognition error:", e.error);
+    recognition.onend = () => {
+      // Only auto-restart for non-fatal stops (natural pause/silence)
+      if (recognitionRef.current === recognition && enabled) {
+        try { recognition.start(); } catch { /* already stopped */ }
+      }
     };
 
-    recognition.start();
-    setListening(true);
+    try {
+      recognition.start();
+      setListening(true);
+    } catch {
+      // start() throws if mic isn't available — fail silently
+      recognitionRef.current = null;
+    }
   }, [appointmentId, role, socketRef, enabled, addLine]);
 
   const stop = useCallback(() => {

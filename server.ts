@@ -57,6 +57,13 @@ app.prepare().then(() => {
 
     // ── WebRTC Signalling ─────────────────────────────────────────────────────
 
+    // Patient emits this after registering all WebRTC listeners — doctor only
+    // creates the offer once this arrives, eliminating the race condition where
+    // the offer reaches the patient before its onOffer handler is mounted.
+    socket.on("call:ready", ({ appointmentId }: { appointmentId: string }) => {
+      socket.to(`call:${appointmentId}`).emit("call:ready");
+    });
+
     socket.on("call:offer", ({ appointmentId, offer }: { appointmentId: string; offer: object }) => {
       socket.to(`call:${appointmentId}`).emit("call:offer", { offer });
     });
