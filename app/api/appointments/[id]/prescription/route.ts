@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { connectDB } from "@/lib/mongodb";
 import Appointment from "@/lib/models/Appointment";
-import PatientProfile from "@/lib/models/PatientProfile";
+import PatientProfile, { type IPatientProfile } from "@/lib/models/PatientProfile";
 import Case from "@/lib/models/Case";
 import { embedText, buildCaseEmbeddingText } from "@/lib/gemini";
 
@@ -29,10 +29,10 @@ export async function GET(
     }
 
     return NextResponse.json({
-      status:            appt.status,
-      prescription:      appt.prescription      ?? null,
+      status:             appt.status,
+      prescription:       appt.prescription       ?? null,
       prescriptionSentAt: appt.prescriptionSentAt ?? null,
-      aiPrescription:    appt.aiPrescription    ?? null,
+      aiPrescription:     appt.aiPrescription     ?? null,
     });
   } catch (err) {
     console.error(err);
@@ -69,18 +69,31 @@ export async function POST(
       return NextResponse.json({ error: "Call must be ended before sending prescription" }, { status: 400 });
     }
 
-    appt.prescription      = { diagnosis, medicines, advice };
+    appt.prescription       = { diagnosis, medicines, advice };
     appt.prescriptionSentAt = new Date();
-    appt.status            = "completed";
+    appt.status             = "completed";
     await appt.save();
 
-    // Save case to MongoDB with embedding (for future RAG retrieval)
+    // Save case to MongoDB with embedding for future RAG retrieval (fire-and-forget)
     setImmediate(async () => {
       try {
-        const patientProfile = await PatientProfile.findOne({ userRef: appt.patientRef }).lean() as Record<string, unknown> | null;
+        // Use IPatientProfile so property accesses are typed correctly
+        type LeanProfile = Pick<IPatientProfile,
+          "age" | "gender" | "weight" | "height" | "bloodGroup" |
+          "knownConditions" | "allergies" | "currentMedications"
+        >;
+
+        const patientProfile = await PatientProfile
+          .findOne({ userRef: appt.patientRef })
+          .select("age gender weight height bloodGroup knownConditions allergies currentMedications")
+          .lean<LeanProfile>();
+
         if (!patientProfile) return;
 
-        const embText  = buildCaseEmbeddingText(appt, patientProfile);
+        // Cast for Gemini helpers that accept Record<string, unknown>
+        const profileAsRecord = patientProfile as unknown as Record<string, unknown>;
+
+        const embText   = buildCaseEmbeddingText(appt, profileAsRecord);
         const embedding = await embedText(embText);
 
         const caseDoc = await Case.create({
@@ -92,15 +105,15 @@ export async function POST(
             sex:                patientProfile.gender,
             weight:             patientProfile.weight,
             height:             patientProfile.height,
-            bloodGroup:         patientProfile.bloodGroup ?? "",
-            knownConditions:    patientProfile.knownConditions ?? [],
-            allergies:          patientProfile.allergies       ?? [],
+            bloodGroup:         patientProfile.bloodGroup         ?? "",
+            knownConditions:    patientProfile.knownConditions    ?? [],
+            allergies:          patientProfile.allergies          ?? [],
             currentMedications: patientProfile.currentMedications ?? [],
           },
-          symptoms:           appt.preConsultation?.symptoms   ?? "",
-          duration:           appt.preConsultation?.duration   ?? "",
-          severity:           appt.preConsultation?.severity   ?? "",
-          additionalNotes:    appt.preConsultation?.additionalNotes ?? "",
+          symptoms:           appt.preConsultation?.symptoms           ?? "",
+          duration:           appt.preConsultation?.duration           ?? "",
+          severity:           appt.preConsultation?.severity           ?? "",
+          additionalNotes:    appt.preConsultation?.additionalNotes    ?? "",
           currentMedications: appt.preConsultation?.currentMedications ?? "",
           vitals:             appt.preConsultation?.vitals,
           transcript:         appt.transcript ?? "",

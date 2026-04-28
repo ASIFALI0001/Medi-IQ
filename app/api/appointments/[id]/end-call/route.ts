@@ -48,7 +48,7 @@ export async function POST(
         // RAG: find top-5 similar cases (safe to fail if no cases yet)
         let similarCases: Array<Record<string, unknown>> = [];
         try {
-          const embText  = buildCaseEmbeddingText(appt, patientProfile as Record<string, unknown>);
+          const embText  = buildCaseEmbeddingText(appt, patientProfile as unknown as Record<string, unknown>);
           const embedding = await embedText(embText);
           similarCases = await Case.aggregate([
             {
@@ -68,7 +68,7 @@ export async function POST(
 
         const suggestion = await generatePostCallPrescription(
           appt,
-          patientProfile as Record<string, unknown>,
+          patientProfile as unknown as Record<string, unknown>,
           similarCases,
         );
 

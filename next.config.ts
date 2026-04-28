@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  allowedDevOrigins: ["energy-float-hansen-promotional.trycloudflare.com"],
 };
 
 export default nextConfig;

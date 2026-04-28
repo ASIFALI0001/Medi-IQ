@@ -64,7 +64,7 @@ export async function POST(
       return NextResponse.json({ error: "Patient profile not found" }, { status: 404 });
     }
 
-    const report = await generateAiReport(appt, patientProfile as Record<string, unknown>);
+    const report = await generateAiReport(appt, patientProfile as unknown as Record<string, unknown>);
     appt.aiReport = report;
     await appt.save();
 
