@@ -4,8 +4,7 @@ import { useCallback, useEffect, useRef, useState, use } from "react";
 import { useRouter } from "next/navigation";
 import { Mic, MicOff, Video, VideoOff, PhoneOff, Loader2 } from "lucide-react";
 import { useSocket } from "@/hooks/useSocket";
-import { useWebRTC } from "@/hooks/useWebRTC";
-import { useTranscription } from "@/hooks/useTranscription";
+import { useAgora } from "@/hooks/useAgora";
 import { PatientReportPanel } from "@/components/consultation/PatientReportPanel";
 import type { CallAppointment } from "@/types/consultation";
 
@@ -16,33 +15,19 @@ export default function DoctorConsultationPage({ params }: Props) {
   const router    = useRouter();
   const socketRef = useSocket();
 
-  const localStreamRef = useRef<MediaStream | null>(null);
   const localVideoRef  = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const endingRef      = useRef(false);
 
-  const [appt, setAppt]               = useState<CallAppointment | null>(null);
-  const [streamReady, setStreamReady] = useState(false);
-  const [micOn, setMicOn]             = useState(true);
-  const [camOn, setCamOn]             = useState(true);
-  const [peerConnected, setPeer]      = useState(false);
-  const endingRef                     = useRef(false);   // prevent double-redirect
+  const [appt, setAppt] = useState<CallAppointment | null>(null);
 
-  // useWebRTC uses DB polling — streamReady gates offer creation
-  const { connState, remoteStream, hangup } = useWebRTC({
+  const { joined, remoteUsers, micOn, camOn, toggleMic, toggleCam, leave } = useAgora({
     appointmentId: id,
     role:          "doctor",
-    localStreamRef,
-    streamReady,
+    localVideoRef,
   });
 
-  const { lines, getFullText } = useTranscription({
-    appointmentId: id,
-    role:          "doctor",
-    socketRef,
-    enabled:       streamReady,
-  });
-
-  // Fetch appointment data (patient profile included)
+  // Fetch appointment data
   useEffect(() => {
     fetch(`/api/appointments/${id}`)
       .then(r => r.json())
@@ -50,66 +35,29 @@ export default function DoctorConsultationPage({ params }: Props) {
       .catch(() => {});
   }, [id]);
 
-  // Get camera + mic
+  // Mark appointment as in_call + notify patient via socket
   useEffect(() => {
-    let active = true;
-    console.log("[Doctor] Requesting camera + mic…");
-    navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then(stream => {
-      if (!active) { stream.getTracks().forEach(t => t.stop()); return; }
-      console.log("[Doctor] getUserMedia ✓ tracks:", stream.getTracks().map(t => `${t.kind}(${t.readyState})`));
-      localStreamRef.current = stream;
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-        console.log("[Doctor] local video srcObject set");
-      } else {
-        console.warn("[Doctor] localVideoRef is null when stream ready");
-      }
-      setStreamReady(true);
-    }).catch(err => {
-      console.error("[Doctor] getUserMedia FAILED:", err.name, err.message);
-    });
-    return () => {
-      active = false;
-      localStreamRef.current?.getTracks().forEach(t => t.stop());
-    };
-  }, []);
-
-  // Log connState changes
-  useEffect(() => {
-    console.log("[Doctor] connState changed →", connState);
-  }, [connState]);
-
-  // Mark appointment as in_call + notify patient via socket (fast path)
-  useEffect(() => {
-    if (!streamReady) return;
-    console.log("[Doctor] streamReady=true — calling start-call and notifying patient via socket");
+    if (!joined) return;
     fetch(`/api/appointments/${id}/start-call`, { method: "POST" }).catch(() => {});
-    // Socket fast-path: wake up patient waiting room immediately (fallback: patient polls status)
     socketRef.current?.emit("call:doctor-ready", { appointmentId: id });
-  }, [streamReady, id, socketRef]);
+  }, [joined, id, socketRef]);
 
-  // Attach remote stream
+  // Attach remote video when a remote user publishes their video track
   useEffect(() => {
-    if (remoteStream) {
-      console.log("[Doctor] remoteStream received, tracks:", remoteStream.getTracks().map(t => `${t.kind}(${t.readyState})`));
+    const user = remoteUsers.find(u => u.videoTrack);
+    if (user?.videoTrack && remoteVideoRef.current) {
+      user.videoTrack.play(remoteVideoRef.current);
     }
-    if (remoteVideoRef.current && remoteStream) {
-      remoteVideoRef.current.srcObject = remoteStream;
-      console.log("[Doctor] remote video srcObject set ✓");
-      setPeer(true);
-    }
-  }, [remoteStream]);
+  }, [remoteUsers]);
 
-  // Poll appointment status — detects when patient ends call (works on Vercel)
+  // Poll appointment status — detects when patient ends call
   useEffect(() => {
     if (endingRef.current) return;
     const poll = async () => {
       try {
         const res  = await fetch(`/api/appointments/${id}`);
         const data = await res.json();
-        if (data.appointment?.status === "post_call") {
-          goToPostCall(getFullText());
-        }
+        if (data.appointment?.status === "post_call") goToPostCall();
       } catch {}
     };
     const interval = setInterval(poll, 4000);
@@ -117,42 +65,35 @@ export default function DoctorConsultationPage({ params }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  // Socket fast-path: patient ends call → immediate notification
+  // Socket fast-path: patient ends call
   useEffect(() => {
     const socket = socketRef.current;
     if (!socket) return;
-    const handler = () => goToPostCall(getFullText());
+    const handler = () => goToPostCall();
     socket.on("call:ended", handler);
     return () => { socket.off("call:ended", handler); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [socketRef]);
 
-  const goToPostCall = useCallback(async (transcript: string) => {
+  const goToPostCall = useCallback(async () => {
     if (endingRef.current) return;
     endingRef.current = true;
-    hangup();
+    console.log("[Doctor] Ending call — waiting for Whisper transcription…");
+    const transcript = await leave();
     await fetch(`/api/appointments/${id}/end-call`, {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
       body:    JSON.stringify({ transcript }),
     }).catch(() => {});
     router.replace(`/doctor/post-call/${id}`);
-  }, [id, hangup, router]);
-
-  const toggleMic = useCallback(() => {
-    localStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = !t.enabled; });
-    setMicOn(m => !m);
-  }, []);
-
-  const toggleCam = useCallback(() => {
-    localStreamRef.current?.getVideoTracks().forEach(t => { t.enabled = !t.enabled; });
-    setCamOn(c => !c);
-  }, []);
+  }, [id, leave, router]);
 
   const handleEndCall = useCallback(async () => {
     socketRef.current?.emit("call:end", { appointmentId: id });
-    await goToPostCall(getFullText());
-  }, [id, socketRef, getFullText, goToPostCall]);
+    await goToPostCall();
+  }, [id, socketRef, goToPostCall]);
+
+  const peerConnected = remoteUsers.some(u => u.videoTrack || u.audioTrack);
 
   if (!appt) {
     return (
@@ -166,17 +107,17 @@ export default function DoctorConsultationPage({ params }: Props) {
     <div className="min-h-screen bg-slate-950 text-white flex flex-col">
       <div className="flex-1 flex overflow-hidden">
 
-        {/* Left: Videos + Transcript */}
+        {/* Left: Videos + Controls */}
         <div className="flex-1 flex flex-col p-4 gap-3">
           <div className="grid grid-cols-2 gap-3 flex-1">
-            {/* Patient video */}
+            {/* Remote (patient) video */}
             <div className="relative rounded-2xl bg-slate-800 overflow-hidden">
               <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
               {!peerConnected && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
                   <Loader2 className="w-8 h-8 text-blue-400 animate-spin" />
                   <p className="text-sm text-slate-300">
-                    {connState === "connecting" ? "Connecting..." : "Waiting for patient..."}
+                    {joined ? "Waiting for patient…" : "Connecting…"}
                   </p>
                 </div>
               )}
@@ -198,20 +139,6 @@ export default function DoctorConsultationPage({ params }: Props) {
               </div>
             </div>
           </div>
-
-          {/* Live transcript */}
-          {lines.length > 0 && (
-            <div className="max-h-32 overflow-y-auto rounded-xl bg-slate-900 border border-slate-700 px-4 py-3 space-y-1 shrink-0">
-              {lines.map((line, i) => (
-                <p key={i} className="text-xs leading-relaxed">
-                  <span className={`font-semibold ${line.role === "doctor" ? "text-blue-400" : "text-emerald-400"}`}>
-                    {line.role === "doctor" ? "Doctor" : appt.patientName}:
-                  </span>{" "}
-                  <span className="text-slate-300">{line.text}</span>
-                </p>
-              ))}
-            </div>
-          )}
 
           {/* Controls */}
           <div className="flex items-center justify-center gap-4 shrink-0 py-2">

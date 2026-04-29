@@ -338,6 +338,9 @@ export function useWebRTC({
         console.log("[WebRTC] Patient: creating answer…");
 
         pcRef.current?.close();
+        // Clear old remote stream so stale ended tracks don't accumulate across restarts
+        remoteStreamRef.current = null;
+        setRemoteStream(null);
         const newPc = createPC();
         pcRef.current = newPc;
 

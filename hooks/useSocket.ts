@@ -10,14 +10,16 @@ function getSocket(): Socket {
     _socket = io(window.location.origin, {
       path: "/ws/",
       transports: ["websocket"],
-      // Stop retrying after 3 failures — Vercel has no Socket.io server
-      // so without this cap the browser spams failed WS connections forever.
-      reconnectionAttempts: 3,
-      timeout: 4000,
+      // Never reconnect — Vercel has no Socket.io server. Calling socket.connect()
+      // after reconnectionAttempts=3 resets the counter and causes infinite retries.
+      // With reconnection:false the socket gives up on first failure and stays quiet.
+      // App works fine without it: WebRTC uses DB polling, call-end uses status polling.
+      reconnection: false,
+      timeout: 5000,
     });
 
     _socket.on("connect_error", () => {
-      // Silently ignore — app works fine without Socket.io (WebRTC uses DB polling)
+      // Silently ignored — fallback polling handles everything
     });
   }
   return _socket;
@@ -29,7 +31,8 @@ export function useSocket() {
   useEffect(() => {
     const socket = getSocket();
     socketRef.current = socket;
-    if (!socket.connected && socket.disconnected) socket.connect();
+    // Only connect once; don't retry if already permanently disconnected
+    if (!socket.connected && !socket.disconnected) socket.connect();
     return () => {};
   }, []);
 
