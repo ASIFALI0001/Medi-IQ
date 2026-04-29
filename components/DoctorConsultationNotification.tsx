@@ -8,10 +8,12 @@ import { useSocket } from "@/hooks/useSocket";
 import Button from "@/components/ui/Button";
 
 interface ActiveAppt {
-  _id:          string;
-  patientName:  string;
-  status:       string;
-  waitingRoomAt?: string;
+  _id:                string;
+  patientName:        string;
+  status:             string;
+  waitingRoomAt?:     string;
+  callStartedAt?:     string;  // set when call begins
+  prescriptionSentAt?: string; // set when Rx sent → post_call row auto-clears
 }
 
 export default function DoctorConsultationNotification() {
@@ -66,15 +68,17 @@ export default function DoctorConsultationNotification() {
     }
   }, [socketRef]);
 
-  // Categorise
+  // Categorise — exclude any appointment where call already started (callStartedAt set)
+  // so the green "patient waiting" banner doesn't linger after the call ends
   const patientWaiting = appts.filter(a =>
-    ["confirmed", "active"].includes(a.status) && !!a.waitingRoomAt
+    ["confirmed", "active"].includes(a.status) && !!a.waitingRoomAt && !a.callStartedAt
   );
   const waitingNoPatient = appts.filter(a =>
-    ["confirmed", "active"].includes(a.status) && !a.waitingRoomAt
+    ["confirmed", "active"].includes(a.status) && !a.waitingRoomAt && !a.callStartedAt
   );
   const inCall   = appts.filter(a => a.status === "in_call");
-  const postCall = appts.filter(a => a.status === "post_call");
+  // Only show post_call until prescription is sent
+  const postCall = appts.filter(a => a.status === "post_call" && !a.prescriptionSentAt);
 
   if (appts.length === 0) return null;
 
