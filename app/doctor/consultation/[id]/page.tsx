@@ -53,21 +53,36 @@ export default function DoctorConsultationPage({ params }: Props) {
   // Get camera + mic
   useEffect(() => {
     let active = true;
+    console.log("[Doctor] Requesting camera + mic…");
     navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then(stream => {
       if (!active) { stream.getTracks().forEach(t => t.stop()); return; }
+      console.log("[Doctor] getUserMedia ✓ tracks:", stream.getTracks().map(t => `${t.kind}(${t.readyState})`));
       localStreamRef.current = stream;
-      if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+        console.log("[Doctor] local video srcObject set");
+      } else {
+        console.warn("[Doctor] localVideoRef is null when stream ready");
+      }
       setStreamReady(true);
-    }).catch(() => {});
+    }).catch(err => {
+      console.error("[Doctor] getUserMedia FAILED:", err.name, err.message);
+    });
     return () => {
       active = false;
       localStreamRef.current?.getTracks().forEach(t => t.stop());
     };
   }, []);
 
+  // Log connState changes
+  useEffect(() => {
+    console.log("[Doctor] connState changed →", connState);
+  }, [connState]);
+
   // Mark appointment as in_call + notify patient via socket (fast path)
   useEffect(() => {
     if (!streamReady) return;
+    console.log("[Doctor] streamReady=true — calling start-call and notifying patient via socket");
     fetch(`/api/appointments/${id}/start-call`, { method: "POST" }).catch(() => {});
     // Socket fast-path: wake up patient waiting room immediately (fallback: patient polls status)
     socketRef.current?.emit("call:doctor-ready", { appointmentId: id });
@@ -75,8 +90,12 @@ export default function DoctorConsultationPage({ params }: Props) {
 
   // Attach remote stream
   useEffect(() => {
+    if (remoteStream) {
+      console.log("[Doctor] remoteStream received, tracks:", remoteStream.getTracks().map(t => `${t.kind}(${t.readyState})`));
+    }
     if (remoteVideoRef.current && remoteStream) {
       remoteVideoRef.current.srcObject = remoteStream;
+      console.log("[Doctor] remote video srcObject set ✓");
       setPeer(true);
     }
   }, [remoteStream]);

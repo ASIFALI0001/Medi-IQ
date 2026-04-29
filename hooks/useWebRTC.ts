@@ -3,11 +3,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const ICE_SERVERS: RTCIceServer[] = [
+  // STUN servers
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
-  { urls: "turn:openrelay.metered.ca:80",                  username: "openrelayproject", credential: "openrelayproject" },
-  { urls: "turn:openrelay.metered.ca:443",                 username: "openrelayproject", credential: "openrelayproject" },
-  { urls: "turn:openrelay.metered.ca:443?transport=tcp",   username: "openrelayproject", credential: "openrelayproject" },
+  { urls: "stun:stun2.l.google.com:19302" },
+  { urls: "stun:stun3.l.google.com:19302" },
+  // openrelay free TURN (UDP + TCP + TLS)
+  { urls: "turn:openrelay.metered.ca:80",                    username: "openrelayproject", credential: "openrelayproject" },
+  { urls: "turn:openrelay.metered.ca:443",                   username: "openrelayproject", credential: "openrelayproject" },
+  { urls: "turn:openrelay.metered.ca:443?transport=tcp",     username: "openrelayproject", credential: "openrelayproject" },
+  // TURNS (TURN over TLS port 443) — almost never blocked by firewalls
+  { urls: "turns:openrelay.metered.ca:443?transport=tcp",    username: "openrelayproject", credential: "openrelayproject" },
+  // numb.viagenie.ca — reliable free TURN for testing, different infra
+  { urls: "turn:numb.viagenie.ca",                           username: "webrtc@live.com",  credential: "muazkh" },
+  { urls: "turn:numb.viagenie.ca:3478?transport=tcp",        username: "webrtc@live.com",  credential: "muazkh" },
 ];
 
 type ConnectionState = "idle" | "connecting" | "connected" | "disconnected" | "failed";
@@ -89,12 +98,29 @@ export function useWebRTC({
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
     pc.onicecandidate = ({ candidate }) => {
-      if (!candidate) return;
+      if (!candidate) {
+        console.log(`[WebRTC] ${role}: ICE gathering complete`);
+        return;
+      }
+      // Log every candidate so we can see if TURN relay candidates appear
+      const c = candidate.candidate;
+      const typ = c.match(/typ (\w+)/)?.[1] ?? "?";
+      const ip  = c.match(/(\d+\.\d+\.\d+\.\d+|[0-9a-f:]+) \d+ typ/)?.[1] ?? "?";
+      console.log(`[WebRTC] ${role} ICE candidate: typ=${typ} ip=${ip}`);
       const t = role === "doctor" ? "ice-doctor" : "ice-patient";
       postSignal(appointmentId, t, candidate.toJSON()).catch(() => {});
     };
 
+    pc.onicegatheringstatechange = () => {
+      console.log(`[WebRTC] ${role}: ICE gathering state → ${pc.iceGatheringState}`);
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      console.log(`[WebRTC] ${role}: ICE connection state → ${pc.iceConnectionState}`);
+    };
+
     pc.ontrack = ({ track }) => {
+      console.log(`[WebRTC] ${role}: remote track received: ${track.kind}`);
       if (!remoteStreamRef.current) remoteStreamRef.current = new MediaStream();
       remoteStreamRef.current.addTrack(track);
       setRemoteStream(new MediaStream(remoteStreamRef.current.getTracks()));
@@ -102,6 +128,7 @@ export function useWebRTC({
 
     pc.onconnectionstatechange = () => {
       const s = pc.connectionState;
+      console.log(`[WebRTC] ${role}: connection state → ${s}`);
       if (s === "connected")    setConnState("connected");
       if (s === "disconnected") setConnState("disconnected");
       if (s === "failed")       setConnState("failed");
@@ -127,11 +154,21 @@ export function useWebRTC({
 
     const pc = createPC();
     pcRef.current = pc;
+
+    const stream = localStreamRef.current;
+    if (stream) {
+      const tracks = stream.getTracks();
+      console.log(`[WebRTC] Doctor: attaching ${tracks.length} local track(s):`, tracks.map(t => t.kind));
+    } else {
+      console.warn("[WebRTC] Doctor: localStream is NULL when attaching tracks — video/audio won't be sent");
+    }
     attachLocalTracks(pc);
 
     try {
       const offer = await pc.createOffer();
+      console.log("[WebRTC] Doctor: offer SDP created, type=", offer.type);
       await pc.setLocalDescription(offer);
+      console.log("[WebRTC] Doctor: setLocalDescription(offer) done, signalingState=", pc.signalingState);
       const ok = await postSignal(appointmentId, "offer", { type: offer.type, sdp: offer.sdp });
       if (ok) {
         offerPosted.current = true;
@@ -146,7 +183,7 @@ export function useWebRTC({
       pc.close();
       pcRef.current = null;
     }
-  }, [appointmentId, createPC, attachLocalTracks]);
+  }, [appointmentId, createPC, attachLocalTracks, localStreamRef]);
 
   // ── Polling loop ──────────────────────────────────────────────────────────
 
@@ -160,17 +197,28 @@ export function useWebRTC({
     if (role === "doctor") {
       if (sig.answer && !answerApplied.current && pc) {
         answerApplied.current = true;
+        console.log("[WebRTC] Doctor: applying answer (signalingState before=", pc.signalingState, ")");
         try {
           await pc.setRemoteDescription(new RTCSessionDescription(sig.answer as RTCSessionDescriptionInit));
-          console.log("[WebRTC] Doctor: answer applied ✓");
+          console.log("[WebRTC] Doctor: answer applied ✓ signalingState=", pc.signalingState);
         } catch (e) {
           console.error("[WebRTC] Doctor: setRemoteDescription(answer) failed:", e);
           answerApplied.current = false;
         }
       }
       const newPatIce = (sig.patientIce ?? []).slice(appliedPatIce.current);
+      if (newPatIce.length > 0) {
+        console.log(`[WebRTC] Doctor: applying ${newPatIce.length} patient ICE candidate(s)`);
+      }
       for (const c of newPatIce) {
-        try { await pc?.addIceCandidate(new RTCIceCandidate(c as RTCIceCandidateInit)); } catch {}
+        try {
+          await pc?.addIceCandidate(new RTCIceCandidate(c as RTCIceCandidateInit));
+          const cand = c as { candidate?: string };
+          const typ = cand.candidate?.match(/typ (\w+)/)?.[1] ?? "?";
+          console.log(`[WebRTC] Doctor: added patient ICE typ=${typ}`);
+        } catch (e) {
+          console.warn("[WebRTC] Doctor: addIceCandidate(patient) failed:", e);
+        }
       }
       appliedPatIce.current += newPatIce.length;
     }
@@ -186,12 +234,22 @@ export function useWebRTC({
         pcRef.current?.close();
         const newPc = createPC();
         pcRef.current = newPc;
-        attachLocalTracks(newPc);   // attach stream if available (OK if empty — call still connects)
+
+        const stream = localStreamRef.current;
+        if (stream) {
+          console.log(`[WebRTC] Patient: attaching ${stream.getTracks().length} local track(s):`, stream.getTracks().map(t => t.kind));
+        } else {
+          console.warn("[WebRTC] Patient: localStream is NULL when attaching tracks");
+        }
+        attachLocalTracks(newPc);
 
         try {
           await newPc.setRemoteDescription(new RTCSessionDescription(sig.offer as RTCSessionDescriptionInit));
+          console.log("[WebRTC] Patient: setRemoteDescription(offer) done, signalingState=", newPc.signalingState);
           const answer = await newPc.createAnswer();
+          console.log("[WebRTC] Patient: answer SDP created, type=", answer.type);
           await newPc.setLocalDescription(answer);
+          console.log("[WebRTC] Patient: setLocalDescription(answer) done, signalingState=", newPc.signalingState);
           const ok = await postSignal(appointmentId, "answer", { type: answer.type, sdp: answer.sdp });
           if (ok) {
             answerPosted.current = true;
@@ -212,12 +270,22 @@ export function useWebRTC({
 
       // Apply doctor ICE candidates
       const newDocIce = (sig.doctorIce ?? []).slice(appliedDocIce.current);
+      if (newDocIce.length > 0) {
+        console.log(`[WebRTC] Patient: applying ${newDocIce.length} doctor ICE candidate(s)`);
+      }
       for (const c of newDocIce) {
-        try { await pcRef.current?.addIceCandidate(new RTCIceCandidate(c as RTCIceCandidateInit)); } catch {}
+        try {
+          await pcRef.current?.addIceCandidate(new RTCIceCandidate(c as RTCIceCandidateInit));
+          const cand = c as { candidate?: string };
+          const typ = cand.candidate?.match(/typ (\w+)/)?.[1] ?? "?";
+          console.log(`[WebRTC] Patient: added doctor ICE typ=${typ}`);
+        } catch (e) {
+          console.warn("[WebRTC] Patient: addIceCandidate(doctor) failed:", e);
+        }
       }
       appliedDocIce.current += newDocIce.length;
     }
-  }, [appointmentId, role, createPC, attachLocalTracks]);
+  }, [appointmentId, role, createPC, attachLocalTracks, localStreamRef]);
 
   const startPolling = useCallback(() => {
     if (pollTimer.current) return;

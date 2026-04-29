@@ -39,24 +39,42 @@ export default function PatientConsultationPage({ params }: { params: Promise<{ 
   // Get camera + mic
   useEffect(() => {
     let active = true;
+    console.log("[Patient] Requesting camera + mic…");
     navigator.mediaDevices.getUserMedia({ video: true, audio: true })
       .then(stream => {
         if (!active) { stream.getTracks().forEach(t => t.stop()); return; }
+        console.log("[Patient] getUserMedia ✓ tracks:", stream.getTracks().map(t => `${t.kind}(${t.readyState})`));
         localStreamRef.current = stream;
-        if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+          console.log("[Patient] local video srcObject set");
+        } else {
+          console.warn("[Patient] localVideoRef is null when stream ready");
+        }
         setStreamReady(true);
       })
-      .catch(() => {});
+      .catch(err => {
+        console.error("[Patient] getUserMedia FAILED:", err.name, err.message);
+      });
     return () => {
       active = false;
       localStreamRef.current?.getTracks().forEach(t => t.stop());
     };
   }, []);
 
+  // Log connState changes
+  useEffect(() => {
+    console.log("[Patient] connState changed →", connState);
+  }, [connState]);
+
   // Attach remote stream to video element
   useEffect(() => {
+    if (remoteStream) {
+      console.log("[Patient] remoteStream received, tracks:", remoteStream.getTracks().map(t => `${t.kind}(${t.readyState})`));
+    }
     if (remoteVideoRef.current && remoteStream) {
       remoteVideoRef.current.srcObject = remoteStream;
+      console.log("[Patient] remote video srcObject set ✓");
       setPeerConn(true);
     }
   }, [remoteStream]);
