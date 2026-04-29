@@ -2,21 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const ICE_SERVERS: RTCIceServer[] = [
-  // STUN servers
+const STUN_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
   { urls: "stun:stun2.l.google.com:19302" },
   { urls: "stun:stun3.l.google.com:19302" },
-  // openrelay free TURN (UDP + TCP + TLS)
-  { urls: "turn:openrelay.metered.ca:80",                    username: "openrelayproject", credential: "openrelayproject" },
-  { urls: "turn:openrelay.metered.ca:443",                   username: "openrelayproject", credential: "openrelayproject" },
-  { urls: "turn:openrelay.metered.ca:443?transport=tcp",     username: "openrelayproject", credential: "openrelayproject" },
-  // TURNS (TURN over TLS port 443) — almost never blocked by firewalls
-  { urls: "turns:openrelay.metered.ca:443?transport=tcp",    username: "openrelayproject", credential: "openrelayproject" },
-  // numb.viagenie.ca — different infra
-  { urls: "turn:numb.viagenie.ca",                           username: "webrtc@live.com",  credential: "muazkh" },
-  { urls: "turn:numb.viagenie.ca:3478?transport=tcp",        username: "webrtc@live.com",  credential: "muazkh" },
 ];
 
 type ConnectionState = "idle" | "connecting" | "connected" | "disconnected" | "failed";
@@ -100,9 +90,25 @@ export function useWebRTC({
   const appliedDocIce   = useRef(0);       // how many doctor ICE candidates applied
   const lastOfferUfrag  = useRef<string | null>(null); // detect new offer sessions
 
-  const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollTimer      = useRef<ReturnType<typeof setInterval> | null>(null);
+  const iceServersRef  = useRef<RTCIceServer[]>(STUN_SERVERS);
 
   useEffect(() => { streamReadyRef.current = streamReady; }, [streamReady]);
+
+  // Fetch TURN credentials from server on mount (key never exposed to browser)
+  useEffect(() => {
+    fetch("/api/turn-credentials")
+      .then(r => r.json())
+      .then(({ servers }: { servers?: RTCIceServer[] }) => {
+        if (servers?.length) {
+          console.log(`[WebRTC] TURN servers loaded: ${servers.length} server(s)`);
+          iceServersRef.current = [...STUN_SERVERS, ...servers];
+        } else {
+          console.warn("[WebRTC] No TURN servers configured — cross-network calls may fail");
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const [connState, setConnState]       = useState<ConnectionState>("idle");
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
@@ -110,7 +116,7 @@ export function useWebRTC({
   // ── PC factory ────────────────────────────────────────────────────────────
 
   const createPC = useCallback((): RTCPeerConnection => {
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    const pc = new RTCPeerConnection({ iceServers: iceServersRef.current });
 
     pc.onicecandidate = ({ candidate }) => {
       if (!candidate) {
