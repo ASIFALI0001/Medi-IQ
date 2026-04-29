@@ -1,9 +1,10 @@
 import { getCurrentUser } from "@/lib/auth";
 import { connectDB } from "@/lib/mongodb";
 import Appointment from "@/lib/models/Appointment";
+import PatientProfile from "@/lib/models/PatientProfile";
 import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, User, CalendarDays, Clock, FileText, Brain, Pill, MessageSquare, Activity } from "lucide-react";
+import { ArrowLeft, User, FileText, Brain, Pill, MessageSquare, Activity } from "lucide-react";
 
 function fmt(d: Date | string | undefined) {
   if (!d) return "—";
@@ -26,9 +27,8 @@ export default async function DoctorAppointmentDetailPage({
 
   const appt = raw as unknown as {
     _id: string;
+    patientRef: string;
     patientName: string;
-    specialization: string;
-    consultationFee: number;
     consultationStartsAt: Date;
     status: string;
     preConsultation?: {
@@ -49,10 +49,24 @@ export default async function DoctorAppointmentDetailPage({
     prescriptionSentAt?: Date;
   };
 
-  const pc = appt.preConsultation;
+  // Fetch the patient's health profile for full clinical context
+  const profileRaw = await PatientProfile.findOne({ userRef: appt.patientRef }).lean();
+  const profile = profileRaw as unknown as {
+    age?: number;
+    gender?: string;
+    weight?: number;
+    height?: number;
+    bloodGroup?: string;
+    knownConditions?: string[];
+    allergies?: string[];
+    currentMedications?: string[];
+    emergencyContact?: { name?: string; relationship?: string; phone?: string };
+  } | null;
+
+  const pc     = appt.preConsultation;
   const vitals = pc?.vitals;
-  const rx = appt.prescription;
-  const ai = appt.aiReport;
+  const rx     = appt.prescription;
+  const ai     = appt.aiReport;
 
   return (
     <div className="p-6 max-w-4xl mx-auto space-y-6">
@@ -67,21 +81,67 @@ export default async function DoctorAppointmentDetailPage({
         </div>
       </div>
 
-      {/* Patient overview */}
+      {/* Patient health profile */}
       <section className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
         <div className="flex items-center gap-2 mb-4">
           <User className="w-4 h-4 text-blue-600" />
-          <h2 className="font-semibold text-slate-700 text-sm">Patient Overview</h2>
+          <h2 className="font-semibold text-slate-700 text-sm">Patient Profile</h2>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Info label="Patient" value={appt.patientName} />
-          <Info label="Specialization" value={appt.specialization} />
-          <Info label="Consultation Fee" value={`₹${appt.consultationFee}`} />
-          <Info label="Status" value={appt.status.replace("_", " ")} className="capitalize" />
+
+        {/* Demographics row */}
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-4">
+          <Info label="Name"         value={appt.patientName} />
+          <Info label="Age"          value={profile?.age != null ? `${profile.age} yrs` : undefined} />
+          <Info label="Gender"       value={profile?.gender}  className="capitalize" />
+          <Info label="Weight"       value={profile?.weight != null ? `${profile.weight} kg` : undefined} />
+          <Info label="Height"       value={profile?.height != null ? `${profile.height} cm` : undefined} />
         </div>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+          <Info label="Blood Group"  value={profile?.bloodGroup} />
+        </div>
+
+        {/* Medical history */}
+        {(profile?.knownConditions?.length || profile?.allergies?.length || profile?.currentMedications?.length) && (
+          <div className="mt-4 pt-4 border-t border-slate-100 space-y-3">
+            {profile?.knownConditions?.length ? (
+              <div>
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Known Conditions</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {profile.knownConditions.map((c, i) => (
+                    <span key={i} className="text-xs bg-orange-50 text-orange-700 border border-orange-100 px-2.5 py-0.5 rounded-full">{c}</span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {profile?.allergies?.length ? (
+              <div>
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Allergies</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {profile.allergies.map((a, i) => (
+                    <span key={i} className="text-xs bg-red-50 text-red-700 border border-red-100 px-2.5 py-0.5 rounded-full">{a}</span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {profile?.currentMedications?.length ? (
+              <div>
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Ongoing Medications</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {profile.currentMedications.map((m, i) => (
+                    <span key={i} className="text-xs bg-blue-50 text-blue-700 border border-blue-100 px-2.5 py-0.5 rounded-full">{m}</span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        )}
+
+        {!profile && (
+          <p className="text-xs text-slate-400 mt-2">Patient has not completed their health profile.</p>
+        )}
       </section>
 
-      {/* Pre-consultation */}
+      {/* Pre-consultation form */}
       {pc && (
         <section className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
           <div className="flex items-center gap-2 mb-4">
@@ -89,37 +149,35 @@ export default async function DoctorAppointmentDetailPage({
             <h2 className="font-semibold text-slate-700 text-sm">Pre-Consultation Form</h2>
           </div>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-            <Info label="Symptoms" value={pc.symptoms} />
-            <Info label="Duration" value={pc.duration} />
-            <Info label="Severity" value={pc.severity} className="capitalize" />
-            {pc.currentMedications && <Info label="Current Medications" value={pc.currentMedications} />}
-            {pc.additionalNotes && <Info label="Notes" value={pc.additionalNotes} className="col-span-2" />}
+            <Info label="Symptoms"  value={pc.symptoms} />
+            <Info label="Duration"  value={pc.duration} />
+            <Info label="Severity"  value={pc.severity} className="capitalize" />
+            {pc.currentMedications && <Info label="Medications Mentioned" value={pc.currentMedications} />}
+            {pc.additionalNotes    && <Info label="Additional Notes"       value={pc.additionalNotes}    className="col-span-2" />}
           </div>
           {vitals && (
             <div className="mt-4 pt-4 border-t border-slate-100">
               <div className="flex items-center gap-2 mb-3">
                 <Activity className="w-4 h-4 text-rose-500" />
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Vitals</p>
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Vitals at Consultation</p>
               </div>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <VitalChip label="Blood Pressure" value={`${vitals.sbp}/${vitals.dbp} mmHg`} sub={vitals.bp_classification} />
-                <VitalChip label="Heart Rate" value={`${vitals.hr} bpm`} sub={vitals.hr_classification} />
+                <VitalChip label="Heart Rate"     value={`${vitals.hr} bpm`}                 sub={vitals.hr_classification} />
               </div>
             </div>
           )}
         </section>
       )}
 
-      {/* AI Report */}
+      {/* AI pre-call analysis */}
       {ai && (
         <section className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
           <div className="flex items-center gap-2 mb-4">
             <Brain className="w-4 h-4 text-violet-600" />
             <h2 className="font-semibold text-slate-700 text-sm">AI Pre-Call Analysis</h2>
           </div>
-          {ai.summary && (
-            <p className="text-sm text-slate-600 mb-4 leading-relaxed">{ai.summary}</p>
-          )}
+          {ai.summary && <p className="text-sm text-slate-600 mb-4 leading-relaxed">{ai.summary}</p>}
           {ai.conditions && ai.conditions.length > 0 && (
             <div className="mb-4">
               <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Probable Conditions</p>
@@ -156,14 +214,14 @@ export default async function DoctorAppointmentDetailPage({
           </div>
           <div className="bg-slate-50 rounded-xl p-4 max-h-64 overflow-y-auto">
             {appt.transcript.split("\n").map((line, i) => {
-              const isDoctor  = line.startsWith("Doctor:");
-              const isPatient = line.startsWith("Patient:");
+              const isDoc = line.startsWith("Doctor:");
+              const isPat = line.startsWith("Patient:");
               return (
                 <p key={i} className="text-sm mb-1.5 leading-relaxed">
-                  {(isDoctor || isPatient) ? (
+                  {(isDoc || isPat) ? (
                     <>
-                      <span className={`font-semibold ${isDoctor ? "text-blue-600" : "text-emerald-600"}`}>
-                        {isDoctor ? "Doctor" : "Patient"}:
+                      <span className={`font-semibold ${isDoc ? "text-blue-600" : "text-emerald-600"}`}>
+                        {isDoc ? "Doctor" : appt.patientName}:
                       </span>
                       <span className="text-slate-600">{line.replace(/^(Doctor|Patient):/, "")}</span>
                     </>
@@ -182,7 +240,7 @@ export default async function DoctorAppointmentDetailPage({
         <section className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
           <div className="flex items-center gap-2 mb-4">
             <Pill className="w-4 h-4 text-blue-600" />
-            <h2 className="font-semibold text-slate-700 text-sm">Prescription Given</h2>
+            <h2 className="font-semibold text-slate-700 text-sm">Prescription Issued</h2>
             {appt.prescriptionSentAt && (
               <span className="ml-auto text-xs text-slate-400">{fmt(appt.prescriptionSentAt)}</span>
             )}
@@ -194,23 +252,21 @@ export default async function DoctorAppointmentDetailPage({
             </div>
           )}
           {rx.medicines && rx.medicines.length > 0 && (
-            <div className="mb-4">
+            <div className="mb-4 space-y-2">
               <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Medicines</p>
-              <div className="space-y-2">
-                {rx.medicines.map((m, i) => (
-                  <div key={i} className="flex items-start gap-3 bg-slate-50 rounded-xl px-4 py-3">
-                    <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 text-xs font-bold shrink-0 mt-0.5">
-                      {i + 1}
-                    </div>
-                    <div className="flex-1">
-                      <p className="font-semibold text-slate-800 text-sm">{m.medicine}</p>
-                      <p className="text-xs text-slate-500 mt-0.5">
-                        {m.dosage} · {m.timing} · {m.frequency} · {m.duration}
-                      </p>
-                    </div>
+              {rx.medicines.map((m, i) => (
+                <div key={i} className="flex items-start gap-3 bg-slate-50 rounded-xl px-4 py-3">
+                  <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 text-xs font-bold shrink-0 mt-0.5">
+                    {i + 1}
                   </div>
-                ))}
-              </div>
+                  <div>
+                    <p className="font-semibold text-slate-800 text-sm">{m.medicine}</p>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      {[m.dosage, m.timing, m.frequency, m.duration].filter(Boolean).join(" · ")}
+                    </p>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
           {rx.advice && (

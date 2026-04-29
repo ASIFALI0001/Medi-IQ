@@ -40,14 +40,14 @@ export default async function DoctorDashboard() {
   tomorrow.setDate(tomorrow.getDate() + 1);
 
   const [todayRaw, allRaw] = await Promise.all([
-    Appointment.find({ doctorRef: authUser.userId, date: { $gte: today, $lt: tomorrow } }).sort({ date: 1 }).lean(),
-    Appointment.find({ doctorRef: authUser.userId }).sort({ date: -1 }).limit(8).lean(),
+    Appointment.find({ doctorRef: authUser.userId, consultationStartsAt: { $gte: today, $lt: tomorrow } }).sort({ consultationStartsAt: 1 }).lean(),
+    Appointment.find({ doctorRef: authUser.userId }).sort({ consultationStartsAt: -1 }).limit(8).lean(),
   ]);
 
-  type TodayAppt = { _id: string; patientName: string; timeSlot: string; status: string };
-  type AllAppt = { _id: string; patientName: string; date: Date; timeSlot: string; status: string };
+  type TodayAppt = { _id: string; patientName: string; consultationStartsAt: Date; status: string };
+  type AllAppt   = { _id: string; patientName: string; consultationStartsAt: Date; status: string };
   const todayAppts = todayRaw as unknown as TodayAppt[];
-  const allAppts = allRaw as unknown as AllAppt[];
+  const allAppts   = allRaw  as unknown as AllAppt[];
 
   const completedCount = allAppts.filter((a) => a.status === "completed").length;
 
@@ -147,12 +147,13 @@ export default async function DoctorDashboard() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-semibold text-slate-700 truncate">{appt.patientName}</p>
-                    <p className="text-xs text-slate-500">{appt.timeSlot}</p>
+                    <p className="text-xs text-slate-500">{formatDate(appt.consultationStartsAt)}</p>
                   </div>
                   <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full capitalize ${
-                    appt.status === "scheduled" ? "bg-blue-50 text-blue-700" :
-                    appt.status === "completed" ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"
-                  }`}>{appt.status}</span>
+                    appt.status === "completed" ? "bg-emerald-50 text-emerald-700" :
+                    appt.status === "cancelled" || appt.status === "rejected" ? "bg-red-50 text-red-700" :
+                    "bg-blue-50 text-blue-700"
+                  }`}>{appt.status.replace("_", " ")}</span>
                 </div>
               ))}
             </div>
@@ -181,12 +182,13 @@ export default async function DoctorDashboard() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-semibold text-slate-700 truncate">{appt.patientName}</p>
-                    <p className="text-xs text-slate-500">{formatDate(appt.date)} · {appt.timeSlot}</p>
+                    <p className="text-xs text-slate-500">{formatDate(appt.consultationStartsAt)}</p>
                   </div>
                   <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full capitalize ${
-                    appt.status === "scheduled" ? "bg-blue-50 text-blue-700" :
-                    appt.status === "completed" ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"
-                  }`}>{appt.status}</span>
+                    appt.status === "completed" ? "bg-emerald-50 text-emerald-700" :
+                    appt.status === "cancelled" || appt.status === "rejected" ? "bg-red-50 text-red-700" :
+                    "bg-blue-50 text-blue-700"
+                  }`}>{appt.status.replace("_", " ")}</span>
                 </div>
               ))}
             </div>

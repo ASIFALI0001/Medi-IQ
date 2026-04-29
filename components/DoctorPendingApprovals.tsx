@@ -184,15 +184,19 @@ export default function DoctorPendingApprovals() {
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [checked, setChecked] = useState(false);
 
+  const TERMINAL = ["completed", "post_call", "in_call", "rejected", "cancelled"];
+
   const poll = useCallback(async () => {
     const res = await fetch("/api/appointments/active");
     const data = await res.json();
-    if (data.appointment) {
+    // Only show appointments that genuinely need doctor approval action
+    if (data.appointment && !TERMINAL.includes(data.appointment.status)) {
       setAppointments([data.appointment]);
     } else {
       setAppointments([]);
     }
     setChecked(true);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
