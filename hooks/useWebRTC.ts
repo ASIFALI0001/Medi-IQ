@@ -246,18 +246,7 @@ export function useWebRTC({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [role, streamReady]);
 
-  // Also retry doctor offer if streamReady but post failed (offerPosted stays false)
-  useEffect(() => {
-    if (role !== "doctor" || !streamReady) return;
-    const retry = setInterval(() => {
-      if (!offerPosted.current) {
-        console.log("[WebRTC] Doctor: retrying offer post…");
-        initiateAsDoctor();
-      }
-    }, 5000);
-    return () => clearInterval(retry);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [role, streamReady]);
+  // (Retry loop removed — it called clear() which wiped the patient's answer)
 
   // ── Hangup ────────────────────────────────────────────────────────────────
 

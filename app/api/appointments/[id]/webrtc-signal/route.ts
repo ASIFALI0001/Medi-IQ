@@ -19,7 +19,6 @@ export async function GET(
       .lean();
 
     if (!appt) return NextResponse.json({ error: "Not found" }, { status: 404 });
-
     const isPatient = appt.patientRef.toString() === user.userId;
     const isDoctor  = appt.doctorRef.toString()  === user.userId;
     if (!isPatient && !isDoctor) {
@@ -33,7 +32,9 @@ export async function GET(
   }
 }
 
-// POST — store a signal (offer / answer / ICE candidate)
+// POST — store a signal using ATOMIC MongoDB operators to prevent lost-update
+// race conditions (patient posts answer + ICE simultaneously → concurrent saves
+// used to overwrite each other, losing the answer from the DB).
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -43,41 +44,46 @@ export async function POST(
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     await connectDB();
-    const { id } = await params;
+    const { id }            = await params;
     const { type, payload } = await req.json();
-    // type: "offer" | "answer" | "ice-doctor" | "ice-patient" | "clear"
 
-    const appt = await Appointment.findById(id);
+    const appt = await Appointment.findById(id).select("patientRef doctorRef").lean();
     if (!appt) return NextResponse.json({ error: "Not found" }, { status: 404 });
-
     const isPatient = appt.patientRef.toString() === user.userId;
     const isDoctor  = appt.doctorRef.toString()  === user.userId;
     if (!isPatient && !isDoctor) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    if (!appt.callSignaling) {
-      appt.callSignaling = { doctorIce: [], patientIce: [] };
-    }
+    // Each operation is atomic — no read-modify-write, no concurrent save conflicts
+    let update: Record<string, unknown> = {};
 
-    if (type === "offer") {
-      appt.callSignaling.offer     = payload;
-      appt.callSignaling.doctorIce = [];
-      appt.callSignaling.patientIce = [];
+    if (type === "clear") {
+      // Reset the whole signaling sub-document atomically
+      update = { $set: { callSignaling: { offer: null, answer: null, doctorIce: [], patientIce: [] } } };
+
+    } else if (type === "offer") {
+      // Set offer and wipe ICE/answer from any previous session
+      update = { $set: { "callSignaling.offer": payload, "callSignaling.answer": null, "callSignaling.doctorIce": [], "callSignaling.patientIce": [] } };
+
     } else if (type === "answer") {
-      appt.callSignaling.answer = payload;
+      // $set is atomic — safe to run concurrently with $push for ICE
+      update = { $set: { "callSignaling.answer": payload } };
+
     } else if (type === "ice-doctor") {
-      appt.callSignaling.doctorIce = [...(appt.callSignaling.doctorIce ?? []), payload];
+      // $push is atomic — no risk of losing parallel answer $set
+      update = { $push: { "callSignaling.doctorIce": payload } };
+
     } else if (type === "ice-patient") {
-      appt.callSignaling.patientIce = [...(appt.callSignaling.patientIce ?? []), payload];
-    } else if (type === "clear") {
-      appt.callSignaling = { doctorIce: [], patientIce: [] };
+      update = { $push: { "callSignaling.patientIce": payload } };
+
+    } else {
+      return NextResponse.json({ error: "Unknown signal type" }, { status: 400 });
     }
 
-    appt.markModified("callSignaling");
-    await appt.save();
-
+    await Appointment.findByIdAndUpdate(id, update);
     return NextResponse.json({ ok: true });
+
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
