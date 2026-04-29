@@ -13,37 +13,53 @@ const ICE_SERVERS: RTCIceServer[] = [
 type ConnectionState = "idle" | "connecting" | "connected" | "disconnected" | "failed";
 
 interface Signaling {
-  offer?:      { type: string; sdp: string } | null;
-  answer?:     { type: string; sdp: string } | null;
-  doctorIce:   object[];
-  patientIce:  object[];
+  offer?:     { type: string; sdp: string } | null;
+  answer?:    { type: string; sdp: string } | null;
+  doctorIce:  object[];
+  patientIce: object[];
 }
 
 export interface UseWebRTCOptions {
   appointmentId:  string;
   role:           "doctor" | "patient";
   localStreamRef: React.RefObject<MediaStream | null>;
-  streamReady:    boolean;   // must be true before creating offer / answering
+  streamReady:    boolean;
 }
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 
-async function postSignal(id: string, type: string, payload: unknown) {
+async function postSignal(id: string, type: string, payload: unknown): Promise<boolean> {
   try {
-    await fetch(`/api/appointments/${id}/webrtc-signal`, {
+    const res = await fetch(`/api/appointments/${id}/webrtc-signal`, {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
       body:    JSON.stringify({ type, payload }),
     });
-  } catch { /* ignore transient failures — polling will retry */ }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string };
+      console.error(`[WebRTC] postSignal ${type} failed:`, res.status, err.error);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.error(`[WebRTC] postSignal ${type} network error:`, e);
+    return false;
+  }
 }
 
 async function getSignaling(id: string): Promise<Signaling | null> {
   try {
     const res  = await fetch(`/api/appointments/${id}/webrtc-signal`);
+    if (!res.ok) {
+      console.error(`[WebRTC] getSignaling failed:`, res.status);
+      return null;
+    }
     const data = await res.json() as { signaling?: Signaling | null };
     return data.signaling ?? null;
-  } catch { return null; }
+  } catch (e) {
+    console.error(`[WebRTC] getSignaling network error:`, e);
+    return null;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -56,24 +72,26 @@ export function useWebRTC({
 }: UseWebRTCOptions) {
   const pcRef           = useRef<RTCPeerConnection | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
-  const initiatedRef    = useRef(false);   // offer sent / offer processed — do once
-  const answerApplied   = useRef(false);
+  const answerPosted    = useRef(false);   // patient: answer successfully posted
+  const offerPosted     = useRef(false);   // doctor:  offer successfully posted
+  const answerApplied   = useRef(false);   // doctor:  answer applied to PC
   const appliedDocIce   = useRef(0);
   const appliedPatIce   = useRef(0);
   const pollTimer       = useRef<ReturnType<typeof setInterval> | null>(null);
+  const processingOffer = useRef(false);   // prevent concurrent answer attempts
 
   const [connState, setConnState]       = useState<ConnectionState>("idle");
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
 
-  // ── Peer connection factory ─────────────────────────────────────────────────
+  // ── PC factory ────────────────────────────────────────────────────────────
 
   const createPC = useCallback((): RTCPeerConnection => {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
     pc.onicecandidate = ({ candidate }) => {
       if (!candidate) return;
-      const iceType = role === "doctor" ? "ice-doctor" : "ice-patient";
-      postSignal(appointmentId, iceType, candidate.toJSON());
+      const t = role === "doctor" ? "ice-doctor" : "ice-patient";
+      postSignal(appointmentId, t, candidate.toJSON()).catch(() => {});
     };
 
     pc.ontrack = ({ track }) => {
@@ -98,118 +116,158 @@ export function useWebRTC({
     stream.getTracks().forEach(track => pc.addTrack(track, stream));
   }, [localStreamRef]);
 
-  // ── Doctor: clear stale signals then post fresh offer ──────────────────────
-  // Only runs when streamReady becomes true (camera + mic obtained).
-  // Patient NEVER calls clear — doing so deletes the doctor's offer.
+  // ── Doctor: create offer (only after stream ready) ────────────────────────
 
   const initiateAsDoctor = useCallback(async () => {
-    if (initiatedRef.current) return;
-    initiatedRef.current = true;
+    if (offerPosted.current) return;
     setConnState("connecting");
+    console.log("[WebRTC] Doctor: clearing signaling and creating offer…");
 
-    // Wipe any leftover signal from a previous session
     await postSignal(appointmentId, "clear", null);
 
     const pc = createPC();
     pcRef.current = pc;
-    attachLocalTracks(pc);      // stream is guaranteed ready here
+    attachLocalTracks(pc);
 
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-
-    // Store offer in DB — patient's polling loop will pick it up
-    await postSignal(appointmentId, "offer", { type: offer.type, sdp: offer.sdp });
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      const ok = await postSignal(appointmentId, "offer", { type: offer.type, sdp: offer.sdp });
+      if (ok) {
+        offerPosted.current = true;
+        console.log("[WebRTC] Doctor: offer posted to DB ✓");
+      } else {
+        console.error("[WebRTC] Doctor: offer post failed — will retry");
+        pc.close();
+        pcRef.current = null;
+      }
+    } catch (e) {
+      console.error("[WebRTC] Doctor: createOffer failed:", e);
+      pc.close();
+      pcRef.current = null;
+    }
   }, [appointmentId, createPC, attachLocalTracks]);
 
-  // ── Polling loop ───────────────────────────────────────────────────────────
+  // ── Polling loop ──────────────────────────────────────────────────────────
+
+  const tick = useCallback(async () => {
+    const sig = await getSignaling(appointmentId);
+    if (!sig) return;
+
+    const pc = pcRef.current;
+
+    // ── DOCTOR: apply answer + patient ICE ───────────────────────────────────
+    if (role === "doctor") {
+      if (sig.answer && !answerApplied.current && pc) {
+        answerApplied.current = true;
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(sig.answer as RTCSessionDescriptionInit));
+          console.log("[WebRTC] Doctor: answer applied ✓");
+        } catch (e) {
+          console.error("[WebRTC] Doctor: setRemoteDescription(answer) failed:", e);
+          answerApplied.current = false;
+        }
+      }
+      const newPatIce = (sig.patientIce ?? []).slice(appliedPatIce.current);
+      for (const c of newPatIce) {
+        try { await pc?.addIceCandidate(new RTCIceCandidate(c as RTCIceCandidateInit)); } catch {}
+      }
+      appliedPatIce.current += newPatIce.length;
+    }
+
+    // ── PATIENT: process offer → post answer ─────────────────────────────────
+    if (role === "patient") {
+      // Retry if: offer exists, answer not yet successfully posted, not mid-attempt
+      if (sig.offer && !answerPosted.current && !processingOffer.current) {
+        processingOffer.current = true;
+        console.log("[WebRTC] Patient: offer found — creating answer…");
+
+        // Close any previous failed PC
+        pcRef.current?.close();
+        const newPc = createPC();
+        pcRef.current = newPc;
+        attachLocalTracks(newPc);   // attach stream if available (OK if empty — call still connects)
+
+        try {
+          await newPc.setRemoteDescription(new RTCSessionDescription(sig.offer as RTCSessionDescriptionInit));
+          const answer = await newPc.createAnswer();
+          await newPc.setLocalDescription(answer);
+          const ok = await postSignal(appointmentId, "answer", { type: answer.type, sdp: answer.sdp });
+          if (ok) {
+            answerPosted.current = true;
+            console.log("[WebRTC] Patient: answer posted ✓");
+          } else {
+            console.error("[WebRTC] Patient: answer post failed — will retry");
+            newPc.close();
+            pcRef.current = null;
+          }
+        } catch (e) {
+          console.error("[WebRTC] Patient: answer creation failed:", e);
+          newPc.close();
+          pcRef.current = null;
+        } finally {
+          processingOffer.current = false;  // allow retry regardless of outcome
+        }
+      }
+
+      // Apply doctor ICE candidates
+      const newDocIce = (sig.doctorIce ?? []).slice(appliedDocIce.current);
+      for (const c of newDocIce) {
+        try { await pcRef.current?.addIceCandidate(new RTCIceCandidate(c as RTCIceCandidateInit)); } catch {}
+      }
+      appliedDocIce.current += newDocIce.length;
+    }
+  }, [appointmentId, role, createPC, attachLocalTracks]);
 
   const startPolling = useCallback(() => {
-    if (pollTimer.current) return;   // already running
+    if (pollTimer.current) return;
+    pollTimer.current = setInterval(() => { tick().catch(() => {}); }, 800);
+  }, [tick]);
 
-    pollTimer.current = setInterval(async () => {
-      const sig = await getSignaling(appointmentId);
-      if (!sig) return;
+  const stopPolling = useCallback(() => {
+    if (pollTimer.current) { clearInterval(pollTimer.current); pollTimer.current = null; }
+  }, []);
 
-      const pc = pcRef.current;
+  // ── Effects ───────────────────────────────────────────────────────────────
 
-      if (role === "doctor") {
-        // Apply answer once it arrives
-        if (sig.answer && !answerApplied.current && pc) {
-          answerApplied.current = true;
-          try {
-            await pc.setRemoteDescription(
-              new RTCSessionDescription(sig.answer as RTCSessionDescriptionInit)
-            );
-          } catch { /* may throw if called twice */ }
-        }
-        // Apply new patient ICE candidates
-        const newIce = (sig.patientIce ?? []).slice(appliedPatIce.current);
-        for (const c of newIce) {
-          try { await pc?.addIceCandidate(new RTCIceCandidate(c as RTCIceCandidateInit)); } catch {}
-        }
-        appliedPatIce.current += newIce.length;
-      }
-
-      if (role === "patient") {
-        // Process offer: wait until OUR stream is ready so we can attach tracks
-        const stream = localStreamRef.current;
-        if (sig.offer && !initiatedRef.current && stream) {
-          initiatedRef.current = true;
-          setConnState("connecting");
-
-          const newPc = createPC();
-          pcRef.current = newPc;
-          attachLocalTracks(newPc);   // stream is ready
-
-          try {
-            await newPc.setRemoteDescription(
-              new RTCSessionDescription(sig.offer as RTCSessionDescriptionInit)
-            );
-            const answer = await newPc.createAnswer();
-            await newPc.setLocalDescription(answer);
-            await postSignal(appointmentId, "answer", { type: answer.type, sdp: answer.sdp });
-          } catch (err) {
-            console.error("Answer creation failed:", err);
-          }
-        }
-        // Apply new doctor ICE candidates
-        const newIce = (sig.doctorIce ?? []).slice(appliedDocIce.current);
-        for (const c of newIce) {
-          try { await pcRef.current?.addIceCandidate(new RTCIceCandidate(c as RTCIceCandidateInit)); } catch {}
-        }
-        appliedDocIce.current += newIce.length;
-      }
-    }, 800);
-  }, [appointmentId, role, createPC, attachLocalTracks, localStreamRef]);
-
-  // ── Effects ────────────────────────────────────────────────────────────────
-
-  // Patient: start polling immediately to watch for the offer
+  // Patient: poll immediately (offer might already be there)
   useEffect(() => {
     if (role !== "patient") return;
     startPolling();
-    return () => { if (pollTimer.current) { clearInterval(pollTimer.current); pollTimer.current = null; } };
+    return stopPolling;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [role]);   // only on mount
+  }, [role]);
 
-  // Doctor: wait for camera/mic, then create offer and start polling
+  // Doctor: wait for camera/mic before creating offer
   useEffect(() => {
     if (role !== "doctor" || !streamReady) return;
-    initiateAsDoctor();
-    startPolling();
-    return () => { if (pollTimer.current) { clearInterval(pollTimer.current); pollTimer.current = null; } };
+    initiateAsDoctor().then(startPolling);
+    return stopPolling;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [role, streamReady]);  // re-runs once when streamReady flips to true
+  }, [role, streamReady]);
 
-  // ── Hangup ─────────────────────────────────────────────────────────────────
+  // Also retry doctor offer if streamReady but post failed (offerPosted stays false)
+  useEffect(() => {
+    if (role !== "doctor" || !streamReady) return;
+    const retry = setInterval(() => {
+      if (!offerPosted.current) {
+        console.log("[WebRTC] Doctor: retrying offer post…");
+        initiateAsDoctor();
+      }
+    }, 5000);
+    return () => clearInterval(retry);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [role, streamReady]);
+
+  // ── Hangup ────────────────────────────────────────────────────────────────
 
   const hangup = useCallback(() => {
-    if (pollTimer.current) { clearInterval(pollTimer.current); pollTimer.current = null; }
+    stopPolling();
     pcRef.current?.close();
     pcRef.current = null;
     postSignal(appointmentId, "clear", null).catch(() => {});
     setConnState("disconnected");
-  }, [appointmentId]);
+  }, [appointmentId, stopPolling]);
 
   return { connState, remoteStream, hangup };
 }

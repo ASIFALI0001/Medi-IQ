@@ -20,7 +20,10 @@ export async function POST(
     if (appt.patientRef.toString() !== user.userId) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
-    if (!["active", "confirmed"].includes(appt.status)) {
+    // Accept any non-terminal status — patient can enter waiting room even before
+    // the 10-min timer fires or while still pending approval (doctor sees them waiting)
+    const terminal = ["completed", "rejected", "cancelled", "in_call", "post_call"];
+    if (terminal.includes(appt.status)) {
       return NextResponse.json({ error: "Appointment not ready for waiting room" }, { status: 400 });
     }
     if (!appt.preConsultation?.filledAt) {
