@@ -88,6 +88,9 @@ export function useWebRTC({
   const appliedPatIce   = useRef(0);
   const pollTimer       = useRef<ReturnType<typeof setInterval> | null>(null);
   const processingOffer = useRef(false);   // prevent concurrent answer attempts
+  const streamReadyRef  = useRef(streamReady);
+
+  useEffect(() => { streamReadyRef.current = streamReady; }, [streamReady]);
 
   const [connState, setConnState]       = useState<ConnectionState>("idle");
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
@@ -195,6 +198,14 @@ export function useWebRTC({
 
     // ── DOCTOR: apply answer + patient ICE ───────────────────────────────────
     if (role === "doctor") {
+      // Detect patientIce reset (patient created a new PC → new ICE session)
+      const patIce = sig.patientIce ?? [];
+      if (patIce.length < appliedPatIce.current) {
+        console.log("[WebRTC] Doctor: patientIce was reset — new patient ICE session, re-applying answer");
+        appliedPatIce.current = 0;
+        answerApplied.current = false;  // allow re-applying the new answer
+      }
+
       if (sig.answer && !answerApplied.current && pc) {
         answerApplied.current = true;
         console.log("[WebRTC] Doctor: applying answer (signalingState before=", pc.signalingState, ")");
@@ -206,7 +217,7 @@ export function useWebRTC({
           answerApplied.current = false;
         }
       }
-      const newPatIce = (sig.patientIce ?? []).slice(appliedPatIce.current);
+      const newPatIce = patIce.slice(appliedPatIce.current);
       if (newPatIce.length > 0) {
         console.log(`[WebRTC] Doctor: applying ${newPatIce.length} patient ICE candidate(s)`);
       }
@@ -225,8 +236,12 @@ export function useWebRTC({
 
     // ── PATIENT: process offer → post answer ─────────────────────────────────
     if (role === "patient") {
-      // Retry if: offer exists, answer not yet successfully posted, not mid-attempt
-      if (sig.offer && !answerPosted.current && !processingOffer.current) {
+      // Wait for local stream before answering — ensures answer is sendrecv (not recvonly)
+      if (sig.offer && !answerPosted.current && !processingOffer.current && !streamReadyRef.current) {
+        console.log("[WebRTC] Patient: offer found but stream not ready yet — waiting…");
+      }
+      // Retry if: offer exists, answer not yet successfully posted, not mid-attempt, stream ready
+      if (sig.offer && !answerPosted.current && !processingOffer.current && streamReadyRef.current) {
         processingOffer.current = true;
         console.log("[WebRTC] Patient: offer found — creating answer…");
 

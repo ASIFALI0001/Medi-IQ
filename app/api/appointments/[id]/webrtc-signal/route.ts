@@ -67,8 +67,8 @@ export async function POST(
       update = { $set: { "callSignaling.offer": payload, "callSignaling.answer": null, "callSignaling.doctorIce": [], "callSignaling.patientIce": [] } };
 
     } else if (type === "answer") {
-      // $set is atomic — safe to run concurrently with $push for ICE
-      update = { $set: { "callSignaling.answer": payload } };
+      // Also reset patientIce so doctor discards stale candidates from any previous PC attempt
+      update = { $set: { "callSignaling.answer": payload, "callSignaling.patientIce": [] } };
 
     } else if (type === "ice-doctor") {
       // $push is atomic — no risk of losing parallel answer $set
