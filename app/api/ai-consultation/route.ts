@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
     if (!user || user.role !== "patient") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     await connectDB();
 
-    const { symptoms, duration, severity, currentMedications, additionalNotes } = await req.json();
+    const { symptoms, duration, severity, currentMedications, additionalNotes, sbp, dbp, hr } = await req.json();
     if (!symptoms || !duration || !severity) {
       return NextResponse.json({ error: "Symptoms, duration and severity are required" }, { status: 400 });
     }
@@ -47,6 +47,8 @@ export async function POST(req: NextRequest) {
       `Ongoing Medications: ${profile?.currentMedications?.join(", ") || "none"}`,
       `Chief Complaint: ${symptoms}`,
       `Duration: ${duration}, Severity: ${severity}`,
+      (sbp && dbp) ? `Blood Pressure: ${sbp}/${dbp} mmHg` : "",
+      hr ? `Heart Rate: ${hr} bpm` : "",
       additionalNotes ? `Notes: ${additionalNotes}` : "",
     ].filter(Boolean).join("\n");
 
@@ -87,6 +89,11 @@ Return ONLY a JSON array of 5 strings, no markdown:
         symptoms, duration, severity,
         currentMedications: currentMedications ?? "",
         additionalNotes:    additionalNotes ?? "",
+        vitals: (sbp || dbp || hr) ? {
+          sbp: sbp ? Number(sbp) : undefined,
+          dbp: dbp ? Number(dbp) : undefined,
+          hr:  hr  ? Number(hr)  : undefined,
+        } : undefined,
         filledAt: new Date(),
       },
       aiQuestions,

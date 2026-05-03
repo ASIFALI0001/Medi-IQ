@@ -10,6 +10,7 @@ export interface IAiConsultation extends Document {
     severity:           string;
     currentMedications: string;
     additionalNotes:    string;
+    vitals?: { sbp?: number; dbp?: number; hr?: number };
     filledAt:           Date;
   };
   aiQuestions:  string[];     // 5 questions Gemini generated before the call
@@ -40,6 +41,7 @@ const AiConsultationSchema = new Schema<IAiConsultation>(
       severity:           String,
       currentMedications: { type: String, default: "" },
       additionalNotes:    { type: String, default: "" },
+      vitals: { sbp: Number, dbp: Number, hr: Number },
       filledAt:           Date,
     },
     aiQuestions:  { type: [String], default: [] },

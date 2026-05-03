@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState, use } from "react";
 import { useRouter } from "next/navigation";
-import Image from "next/image";
 import { Mic, MicOff, PhoneOff, Loader2, Brain } from "lucide-react";
 import Vapi from "@vapi-ai/web";
 
@@ -37,6 +36,7 @@ export default function AiConsultationRoomPage({ params }: { params: Promise<{ i
   const [isSpeaking, setIsSpeaking]     = useState(false);     // assistant speaking
   const [isMuted, setIsMuted]           = useState(false);
   const [transcriptLines, setTranscriptLines] = useState<Array<{ role: string; text: string }>>([]);
+  const [interimText, setInterimText]         = useState<{ role: string; text: string } | null>(null);
 
   // Load consultation data
   useEffect(() => {
@@ -88,10 +88,14 @@ export default function AiConsultationRoomPage({ params }: { params: Promise<{ i
     vapi.on("speech-end",   () => setIsSpeaking(false));
 
     vapi.on("message", (msg: { type: string; role?: string; transcript?: string; transcriptType?: string }) => {
-      if (msg.type === "transcript" && msg.transcriptType === "final" && msg.transcript) {
-        const label = msg.role === "assistant" ? "Doctor" : "Patient";
+      if (msg.type !== "transcript" || !msg.transcript) return;
+      const label = msg.role === "assistant" ? "Doctor" : "Patient";
+      if (msg.transcriptType === "final") {
         setTranscriptLines(prev => [...prev, { role: label, text: msg.transcript! }]);
+        setInterimText(null);                              // clear interim on final
         transcriptRef.current += `${label}: ${msg.transcript}\n`;
+      } else if (msg.transcriptType === "partial") {
+        setInterimText({ role: label, text: msg.transcript }); // show live words
       }
     });
 
@@ -167,7 +171,8 @@ export default function AiConsultationRoomPage({ params }: { params: Promise<{ i
             ? "ring-4 ring-blue-500 shadow-2xl shadow-blue-500/30"
             : "ring-2 ring-slate-700"
         }`}>
-          <Image src="/doctor.jpg" alt="Dr. MediQ AI" fill className="object-cover" />
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/doctor.jpg" alt="Dr. MediQ AI" className="absolute inset-0 w-full h-full object-cover" />
           <div className="absolute inset-0 bg-linear-to-t from-black/60 via-transparent to-transparent" />
           {callState === "active" && isSpeaking && (
             <div className="absolute top-3 right-3 flex gap-1">
@@ -204,16 +209,20 @@ export default function AiConsultationRoomPage({ params }: { params: Promise<{ i
         </div>
       </div>
 
-      {/* Live subtitle */}
+      {/* Live subtitle — show interim first (real-time words), fall back to last final */}
       <div className="w-full max-w-2xl h-12 flex items-center justify-center">
-        {lastLine && callState === "active" && (
-          <p className="text-center text-sm text-slate-300 bg-black/40 backdrop-blur-sm rounded-full px-5 py-2 max-w-full truncate">
-            <span className={`font-semibold mr-1 ${lastLine.role === "Doctor" ? "text-blue-400" : "text-emerald-400"}`}>
-              {lastLine.role}:
-            </span>
-            {lastLine.text}
-          </p>
-        )}
+        {callState === "active" && (interimText || lastLine) && (() => {
+          const display = interimText ?? lastLine!;
+          return (
+            <p className={`text-center text-sm bg-black/40 backdrop-blur-sm rounded-full px-5 py-2 max-w-full truncate transition-opacity ${interimText ? "opacity-80" : "opacity-100"} text-slate-300`}>
+              <span className={`font-semibold mr-1 ${display.role === "Doctor" ? "text-blue-400" : "text-emerald-400"}`}>
+                {display.role}:
+              </span>
+              {display.text}
+              {interimText && <span className="animate-pulse ml-1">▌</span>}
+            </p>
+          );
+        })()}
         {callState === "connecting" && (
           <p className="text-slate-400 text-sm flex items-center gap-2">
             <Loader2 className="w-4 h-4 animate-spin" /> Connecting to Dr. MediQ AI…

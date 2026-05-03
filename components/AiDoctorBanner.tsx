@@ -1,7 +1,6 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import Image from "next/image";
 import { Brain, Zap, Clock, Shield } from "lucide-react";
 
 export default function AiDoctorBanner() {
@@ -16,7 +15,8 @@ export default function AiDoctorBanner() {
       <div className="relative flex items-center gap-6">
         {/* Doctor image */}
         <div className="w-20 h-20 rounded-2xl overflow-hidden border-2 border-white/30 shrink-0 shadow-lg">
-          <Image src="/doctor.jpg" alt="AI Doctor" width={80} height={80} className="object-cover w-full h-full" />
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/doctor.jpg" alt="AI Doctor" className="object-cover w-full h-full" />
         </div>
 
         {/* Content */}

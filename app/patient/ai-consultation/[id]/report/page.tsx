@@ -4,7 +4,6 @@ import AiConsultation from "@/lib/models/AiConsultation";
 import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
 import { Brain, Pill, CheckCircle2, XCircle, ArrowLeft, FileText, AlertTriangle } from "lucide-react";
-import Image from "next/image";
 
 function fmt(d: Date | string | undefined) {
   if (!d) return "—";
@@ -52,7 +51,8 @@ export default async function AiReportPage({ params }: { params: Promise<{ id: s
         </Link>
         <div className="flex items-center gap-3 flex-1">
           <div className="w-10 h-10 rounded-xl overflow-hidden shrink-0">
-            <Image src="/doctor.jpg" alt="AI Doctor" width={40} height={40} className="object-cover w-full h-full" />
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/doctor.jpg" alt="AI Doctor" className="object-cover w-full h-full" />
           </div>
           <div>
             <h1 className="text-xl font-bold text-slate-800">Your Medical Report</h1>

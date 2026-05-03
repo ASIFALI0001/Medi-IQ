@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Brain, Loader2, ChevronRight } from "lucide-react";
-import Image from "next/image";
 import toast from "react-hot-toast";
 
 const SEVERITIES = ["mild", "moderate", "severe"];
@@ -14,6 +13,7 @@ export default function NewAiConsultationPage() {
   const [form, setForm] = useState({
     symptoms: "", duration: "", severity: "moderate",
     currentMedications: "", additionalNotes: "",
+    sbp: "", dbp: "", hr: "",
   });
 
   const set = (k: string, v: string) => setForm(p => ({ ...p, [k]: v }));
@@ -49,7 +49,8 @@ export default function NewAiConsultationPage() {
         {/* Header card */}
         <div className="bg-linear-to-br from-blue-600 to-violet-600 rounded-3xl p-6 text-white flex items-center gap-5 shadow-xl shadow-blue-200">
           <div className="w-16 h-16 rounded-2xl overflow-hidden border-2 border-white/30 shrink-0">
-            <Image src="/doctor.jpg" alt="AI Doctor" width={64} height={64} className="object-cover w-full h-full" />
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/doctor.jpg" alt="AI Doctor" className="object-cover w-full h-full" />
           </div>
           <div>
             <div className="flex items-center gap-2 mb-1">
@@ -130,6 +131,39 @@ export default function NewAiConsultationPage() {
               placeholder="e.g. Metformin 500mg, None"
               className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
             />
+          </div>
+
+          {/* Vitals */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">
+              Vitals <span className="text-slate-400 font-normal normal-case">(optional but helps AI accuracy)</span>
+            </label>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <p className="text-xs text-slate-400 mb-1">Systolic BP (mmHg)</p>
+                <input
+                  type="number" value={form.sbp} onChange={e => set("sbp", e.target.value)}
+                  placeholder="e.g. 120"
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                />
+              </div>
+              <div>
+                <p className="text-xs text-slate-400 mb-1">Diastolic BP (mmHg)</p>
+                <input
+                  type="number" value={form.dbp} onChange={e => set("dbp", e.target.value)}
+                  placeholder="e.g. 80"
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                />
+              </div>
+              <div>
+                <p className="text-xs text-slate-400 mb-1">Heart Rate (bpm)</p>
+                <input
+                  type="number" value={form.hr} onChange={e => set("hr", e.target.value)}
+                  placeholder="e.g. 72"
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                />
+              </div>
+            </div>
           </div>
 
           <div>

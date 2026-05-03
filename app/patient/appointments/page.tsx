@@ -1,9 +1,10 @@
 import { getCurrentUser } from "@/lib/auth";
 import { connectDB } from "@/lib/mongodb";
 import Appointment from "@/lib/models/Appointment";
+import AiConsultation from "@/lib/models/AiConsultation";
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { CalendarDays, Clock, Stethoscope, IndianRupee, ChevronRight } from "lucide-react";
+import { CalendarDays, Clock, Stethoscope, IndianRupee, ChevronRight, Brain } from "lucide-react";
 import BookAppointmentModal from "@/components/BookAppointmentModal";
 
 function formatDate(d: Date | string) {
@@ -37,18 +38,19 @@ export default async function PatientAppointmentsPage() {
   if (!authUser || authUser.role !== "patient") redirect("/login");
 
   await connectDB();
-  const raw = await Appointment
-    .find({ patientRef: authUser.userId })
-    .sort({ consultationStartsAt: -1 })
-    .lean();
+  const [raw, aiRaw] = await Promise.all([
+    Appointment.find({ patientRef: authUser.userId }).sort({ consultationStartsAt: -1 }).lean(),
+    AiConsultation.find({ patientRef: authUser.userId }).sort({ createdAt: -1 }).lean(),
+  ]);
 
   const appts = raw as unknown as Array<{
-    _id: string;
-    doctorName: string;
-    specialization: string;
-    consultationStartsAt: Date;
-    status: string;
-    consultationFee: number;
+    _id: string; doctorName: string; specialization: string;
+    consultationStartsAt: Date; status: string; consultationFee: number;
+  }>;
+  const aiConsultations = aiRaw as unknown as Array<{
+    _id: string; patientName: string; status: string; createdAt: Date;
+    preConsultation?: { symptoms: string };
+    report?: { diagnosis: string };
   }>;
 
   const upcoming = appts.filter(a => ACTIVE_STATUSES.includes(a.status));
@@ -98,6 +100,66 @@ export default async function PatientAppointmentsPage() {
           </div>
         )}
       </section>
+
+      {/* AI Doctor Consultations */}
+      {aiConsultations.length > 0 && (
+        <section>
+          <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-4 flex items-center gap-2">
+            <Brain className="w-3.5 h-3.5" /> AI Doctor Consultations ({aiConsultations.length})
+          </h2>
+          <div className="grid md:grid-cols-2 gap-4">
+            {aiConsultations.map((c, i) => {
+              const isReady = c.status === "report_ready";
+              const href    = isReady
+                ? `/patient/ai-consultation/${c._id}/report`
+                : c.status === "generating_report" || c.status === "in_consultation"
+                ? `/patient/ai-consultation/${c._id}/waiting`
+                : `/patient/ai-consultation/${c._id}`;
+              const inner = (
+                <div
+                  className={`bg-white rounded-2xl border shadow-sm p-5 animate-fade-in-up opacity-0 transition-shadow hover:shadow-md ${isReady ? "border-violet-100" : "border-slate-100"}`}
+                  style={{ animationDelay: `${i * 60}ms`, animationFillMode: "forwards" }}
+                >
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-violet-100 flex items-center justify-center shrink-0">
+                        <Brain className="w-5 h-5 text-violet-600" />
+                      </div>
+                      <div>
+                        <p className="font-semibold text-slate-800 text-sm">Dr. MediQ AI</p>
+                        <p className="text-slate-500 text-xs">AI Consultation</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className={`text-xs font-semibold px-2.5 py-1 rounded-full capitalize ${
+                        isReady ? "bg-emerald-50 text-emerald-700 border border-emerald-100" :
+                        c.status === "generating_report" ? "bg-amber-50 text-amber-700 border border-amber-100" :
+                        "bg-violet-50 text-violet-700 border border-violet-100"
+                      }`}>{isReady ? "Report Ready" : c.status.replace(/_/g, " ")}</span>
+                      {isReady && <ChevronRight className="w-4 h-4 text-slate-400" />}
+                    </div>
+                  </div>
+                  {c.preConsultation?.symptoms && (
+                    <p className="text-xs text-slate-500 mb-2 truncate">
+                      <span className="font-medium text-slate-600">Symptoms:</span> {c.preConsultation.symptoms}
+                    </p>
+                  )}
+                  {c.report?.diagnosis && (
+                    <p className="text-xs text-slate-500 truncate">
+                      <span className="font-medium text-slate-600">Diagnosis:</span> {c.report.diagnosis}
+                    </p>
+                  )}
+                  <div className="flex items-center gap-2 text-xs text-slate-400 mt-3">
+                    <CalendarDays className="w-3.5 h-3.5" />
+                    {formatDate(c.createdAt)} · {formatTime(c.createdAt)}
+                  </div>
+                </div>
+              );
+              return <Link key={String(c._id)} href={href} className="block">{inner}</Link>;
+            })}
+          </div>
+        </section>
+      )}
     </div>
   );
 }
