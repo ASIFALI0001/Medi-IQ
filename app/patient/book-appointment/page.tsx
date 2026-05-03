@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import toast from "react-hot-toast";
 import Button from "@/components/ui/Button";
+import AiDoctorBanner from "@/components/AiDoctorBanner";
 
 interface Doctor {
   _id: string;
@@ -100,6 +101,9 @@ export default function BookAppointmentPage() {
           </p>
         </div>
       </div>
+
+      {/* AI Doctor Banner */}
+      <AiDoctorBanner />
 
       {/* Search + Filter */}
       <div className="flex flex-col sm:flex-row gap-3 animate-fade-in-up stagger-1 opacity-0" style={{ animationFillMode: "forwards" }}>

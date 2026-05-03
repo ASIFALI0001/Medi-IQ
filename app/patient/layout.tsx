@@ -4,13 +4,14 @@ import { connectDB } from "@/lib/mongodb";
 import User from "@/lib/models/User";
 import PatientProfile from "@/lib/models/PatientProfile";
 import Sidebar from "@/components/Sidebar";
-import { LayoutDashboard, CalendarDays, HeartPulse, Stethoscope } from "lucide-react";
+import { LayoutDashboard, CalendarDays, HeartPulse, Stethoscope, Brain } from "lucide-react";
 
 const navItems = [
-  { href: "/patient/dashboard", label: "Dashboard", icon: <LayoutDashboard className="w-4 h-4" /> },
-  { href: "/patient/book-appointment", label: "Find Doctors", icon: <Stethoscope className="w-4 h-4" /> },
-  { href: "/patient/appointments", label: "My Appointments", icon: <CalendarDays className="w-4 h-4" /> },
-  { href: "/patient/profile", label: "Health Profile", icon: <HeartPulse className="w-4 h-4" /> },
+  { href: "/patient/dashboard",            label: "Dashboard",       icon: <LayoutDashboard className="w-4 h-4" /> },
+  { href: "/patient/book-appointment",     label: "Find Doctors",    icon: <Stethoscope className="w-4 h-4" /> },
+  { href: "/patient/ai-consultation/new",  label: "AI Doctor",       icon: <Brain className="w-4 h-4" /> },
+  { href: "/patient/appointments",         label: "My Appointments", icon: <CalendarDays className="w-4 h-4" /> },
+  { href: "/patient/profile",              label: "Health Profile",  icon: <HeartPulse className="w-4 h-4" /> },
 ];
 
 export default async function PatientLayout({ children }: { children: React.ReactNode }) {
