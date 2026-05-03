@@ -100,9 +100,10 @@ export default function AiConsultationRoomPage({ params }: { params: Promise<{ i
       setCallState("idle");
     });
 
-    await vapi.start({
-      assistantId: process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID!,
-      assistantOverrides: {
+    // VAPI v2: start(assistantId, overrides)
+    await vapi.start(
+      process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID!,
+      {
         variableValues: {
           patientName:        consultation.patientName,
           age:                String(profile?.age ?? "unknown"),
@@ -125,7 +126,7 @@ export default function AiConsultationRoomPage({ params }: { params: Promise<{ i
           question5:          qs[4] ?? "",
         },
       },
-    });
+    );
   }, [consultation, profile, callState, id, endCall]);
 
   const toggleMute = useCallback(() => {
