@@ -7,6 +7,7 @@ import User from "@/lib/models/User";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { embedText } from "@/lib/gemini";
 import Case from "@/lib/models/Case";
+import mongoose from "mongoose";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -27,8 +28,10 @@ export async function GET(_req: NextRequest, { params }: Params) {
     }
 
     // Also return patient profile so the consultation room can build VAPI variables
-    const profile = await PatientProfile.findOne({ userRef: consultation.patientRef }).lean();
-    const dbUser  = await User.findById(consultation.patientRef).select("name").lean() as { name: string } | null;
+    const patientId  = String(consultation.patientRef);
+    const patientOid = new mongoose.Types.ObjectId(patientId);
+    const profile = await PatientProfile.findOne({ userRef: patientOid }).lean();
+    const dbUser  = await User.findById(patientOid).select("name").lean() as { name: string } | null;
 
     return NextResponse.json({ consultation, profile, patientName: dbUser?.name });
   } catch (e) {
@@ -79,7 +82,8 @@ async function generateReport(consultationId: string, patientUserId: string) {
   const consultation = await AiConsultation.findById(consultationId);
   if (!consultation) return;
 
-  const profile = await PatientProfile.findOne({ userRef: patientUserId }).lean() as {
+  const patientOid = new mongoose.Types.ObjectId(patientUserId);
+  const profile = await PatientProfile.findOne({ userRef: patientOid }).lean() as {
     age?: number; gender?: string; weight?: number; height?: number; bloodGroup?: string;
     knownConditions?: string[]; allergies?: string[]; currentMedications?: string[];
   } | null;
